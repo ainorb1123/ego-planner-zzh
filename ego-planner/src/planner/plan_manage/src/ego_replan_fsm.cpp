@@ -635,7 +635,12 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
         const double safe_dcpa = planner_manager_->getSafeDCPA();
         Eigen::Vector2d rel_obs = (planner_manager_->ts_pos_ - odom_pos_).head<2>();
         Eigen::Vector2d course;
-        if (odom_vel_.head<2>().norm() > 0.05)
+        if (planner_manager_->hasHeadOnManeuverLock() &&
+            planner_manager_->getHeadOnLockCourse().norm() > 0.05)
+        {
+          course = planner_manager_->getHeadOnLockCourse().normalized();
+        }
+        else if (odom_vel_.head<2>().norm() > 0.05)
         {
           course = odom_vel_.head<2>().normalized();
         }
@@ -656,10 +661,14 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
             tcpa > 0.0 &&
             (tcpa < 8.0 || dcpa < safe_dcpa * 1.2);
 
-        if ((!already_maneuvering || urgent_colregs) &&
-            (time_now - last_colregs_replan_time).toSec() > (urgent_colregs ? 0.8 : 1.5))
+        const bool locked_head_on = planner_manager_->hasHeadOnManeuverLock();
+        const double colregs_replan_interval = (urgent_colregs && !locked_head_on) ? 0.8 : 1.5;
+        const bool need_colregs_replan = !already_maneuvering || (urgent_colregs && !locked_head_on);
+
+        if (need_colregs_replan &&
+            (time_now - last_colregs_replan_time).toSec() > colregs_replan_interval)
         {
-          if (urgent_colregs)
+          if (urgent_colregs && !locked_head_on)
           {
             std_msgs::UInt8 stop_cmd;
             stop_cmd.data = 1;

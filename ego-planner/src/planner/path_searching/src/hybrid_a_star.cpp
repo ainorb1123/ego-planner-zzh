@@ -362,8 +362,96 @@ void HybridAStar::reconstructBidirectionalPath(const std::shared_ptr<HybridNode>
     if (!backward_path.empty()) {
         hybrid_path_.insert(hybrid_path_.end(), backward_path.begin() + 1, backward_path.end());
     }
+    shortcutHybridPath();
 }
 
+bool HybridAStar::isLineCollisionFree(const Eigen::Vector3d& start,
+                                      const Eigen::Vector3d& goal) const
+{
+    Eigen::Vector2d p0(start.x(), start.y());
+    Eigen::Vector2d p1(goal.x(), goal.y());
+    Eigen::Vector2d delta = p1 - p0;
+    const double length = delta.norm();
+    if (length < 1e-6)
+    {
+        return true;
+    }
+
+    const double sample_step = std::max(0.05, step_size_ * 0.5);
+    const int samples = std::max(1, static_cast<int>(std::ceil(length / sample_step)));
+    const double max_soft_cost = 2500.0;
+
+    for (int i = 0; i <= samples; ++i)
+    {
+        const double ratio = static_cast<double>(i) / static_cast<double>(samples);
+        Eigen::Vector2d pos = p0 + ratio * delta;
+
+        if (grid_map_ && grid_map_->getInflateOccupancy2d(pos) > 0)
+        {
+            return false;
+        }
+
+        if (calculateThreatCost(pos) > max_soft_cost)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void HybridAStar::shortcutHybridPath()
+{
+    if (hybrid_path_.size() <= 2)
+    {
+        return;
+    }
+
+    const size_t old_size = hybrid_path_.size();
+    std::vector<std::shared_ptr<HybridNode>> shortcut_path;
+    shortcut_path.reserve(hybrid_path_.size());
+
+    size_t current = 0;
+    shortcut_path.push_back(hybrid_path_.front());
+
+    while (current + 1 < hybrid_path_.size())
+    {
+        size_t next = current + 1;
+        for (size_t candidate = hybrid_path_.size() - 1; candidate > current + 1; --candidate)
+        {
+            if (isLineCollisionFree(hybrid_path_[current]->pose, hybrid_path_[candidate]->pose))
+            {
+                next = candidate;
+                break;
+            }
+        }
+
+        shortcut_path.push_back(hybrid_path_[next]);
+        current = next;
+    }
+
+    for (size_t i = 0; i + 1 < shortcut_path.size(); ++i)
+    {
+        Eigen::Vector2d segment = shortcut_path[i + 1]->pose.head<2>() - shortcut_path[i]->pose.head<2>();
+        if (segment.norm() > 1e-6)
+        {
+            shortcut_path[i]->pose.z() = std::atan2(segment.y(), segment.x());
+        }
+    }
+
+    if (shortcut_path.size() >= 2)
+    {
+        shortcut_path.back()->pose.z() = shortcut_path[shortcut_path.size() - 2]->pose.z();
+    }
+
+    hybrid_path_.swap(shortcut_path);
+
+    if (hybrid_path_.size() + 1 < old_size)
+    {
+        ROS_INFO("Hybrid A*: shortcut path %zu -> %zu points",
+                 old_size, hybrid_path_.size());
+    }
+}
 bool HybridAStar::tryReedSheppConnection(const std::shared_ptr<HybridNode>& current,
                                          const Eigen::Vector3d& goal_pose,
                                          std::vector<Eigen::Vector3d>& connection_path)
@@ -384,7 +472,7 @@ bool HybridAStar::tryReedSheppConnection(const std::shared_ptr<HybridNode>& curr
     return false;
 }
 
-double HybridAStar::calculateThreatCost(const Eigen::Vector2d& node_pos)
+double HybridAStar::calculateThreatCost(const Eigen::Vector2d& node_pos) const
 {
     if (!has_target_ship_ || colregs_mode_ == 0)
         return 0.0;
@@ -644,6 +732,7 @@ bool HybridAStar::tryLateralBypass(const Eigen::Vector3d& start_pose,
             if (!collision && candidate.size() >= 2)
             {
                 hybrid_path_ = candidate;
+                shortcutHybridPath();
                 ROS_WARN("Hybrid A*: using predictive COLREGs bypass, side=%.0f, offset=%.2f, points=%zu",
                          side, offset, hybrid_path_.size());
                 return true;

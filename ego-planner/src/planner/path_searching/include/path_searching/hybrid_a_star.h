@@ -109,10 +109,13 @@ private:
     double tcpa_{0.0};
     double safe_dcpa_{3.5};
 
-    double calculateThreatCost(const Eigen::Vector2d& node_pos);
+    double calculateThreatCost(const Eigen::Vector2d& node_pos) const;
     double calculateInflatedMapProximityCost(const Eigen::Vector2d& node_pos) const;
     double calculateSteeringSmoothnessCost(const std::shared_ptr<HybridNode>& current,
                                            double steering_angle) const;
+    bool isLineCollisionFree(const Eigen::Vector3d& start,
+                             const Eigen::Vector3d& goal) const;
+    void shortcutHybridPath();
     // ===================================
 
     // 私有辅助方法
