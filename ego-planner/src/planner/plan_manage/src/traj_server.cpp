@@ -80,6 +80,13 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
 
 
   start_time_ = msg->start_time;
+  ros::Time now = ros::Time::now();
+  if (!now.isZero() && !start_time_.isZero() && start_time_ > now)
+  {
+    double future_dt = (start_time_ - now).toSec();
+    ROS_WARN_THROTTLE(1.0, "[Traj server]: trajectory start_time is %.4fs in the future, clamp to now.", future_dt);
+    start_time_ = now;
+  }
   traj_id_ = msg->traj_id;
 
   traj_.clear();
@@ -362,6 +369,11 @@ void cmdCallback(const ros::TimerEvent &e)
     //ROS_WARN("Run here !");
     ros::Time time_s = ros::Time::now();
     double t_cur = (time_s - start_time_).toSec();
+    if (t_cur < 0.0)
+    {
+        ROS_WARN_THROTTLE(1.0, "[Traj server]: negative trajectory time %.4fs, clamp to 0.", t_cur);
+        t_cur = 0.0;
+    }
 
 //    Eigen::Vector3d pos_first = traj_[0].evaluateDeBoor(t_cur);
 //    Eigen::Vector3d pos_second = traj_[0].evaluateDeBoor(t_cur+t_step);

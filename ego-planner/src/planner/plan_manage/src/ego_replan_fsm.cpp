@@ -657,7 +657,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
             (tcpa < 8.0 || dcpa < safe_dcpa * 1.2);
 
         if ((!already_maneuvering || urgent_colregs) &&
-            (time_now - last_colregs_replan_time).toSec() > (urgent_colregs ? 0.2 : 1.5))
+            (time_now - last_colregs_replan_time).toSec() > (urgent_colregs ? 0.8 : 1.5))
         {
           if (urgent_colregs)
           {
