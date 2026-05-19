@@ -414,11 +414,25 @@ double HybridAStar::calculateThreatCost(const Eigen::Vector2d& node_pos)
         along > encounter_along - active_before && along < encounter_along + active_after;
 
     double cost = 0.0;
-    const double dist_to_pred = (node_pos - ts_pred).norm();
+    const Eigen::Vector2d rel_to_ts_pred = node_pos - ts_pred;
+    const double ts_along = rel_to_ts_pred.dot(route_vec);
+    const double ts_lateral = route_vec.x() * rel_to_ts_pred.y() - route_vec.y() * rel_to_ts_pred.x();
+    const double longitudinal_clearance = std::max(12.0, safe_dcpa_ * 2.8);
+    const double lateral_clearance = std::max(7.0, safe_dcpa_ * 1.4);
+    const double ellipse_value =
+        (ts_along * ts_along) / (longitudinal_clearance * longitudinal_clearance) +
+        (ts_lateral * ts_lateral) / (lateral_clearance * lateral_clearance);
+    if (ellipse_value < 1.0)
+    {
+        const double ratio = 1.0 - ellipse_value;
+        cost += 2600.0 * ratio * ratio;
+    }
+
+    const double dist_to_pred = rel_to_ts_pred.norm();
     if (dist_to_pred < desired_clearance * 2.0)
     {
         const double ratio = (desired_clearance * 2.0 - dist_to_pred) / (desired_clearance * 2.0);
-        cost += 600.0 * ratio * ratio;
+        cost += 900.0 * ratio * ratio;
     }
 
     if (colregs_mode_ == 1)

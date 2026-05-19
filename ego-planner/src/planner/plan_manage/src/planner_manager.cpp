@@ -288,10 +288,12 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
                 const Eigen::Vector2d target2d = local_target_pt.head<2>();
                 const double path_len = std::max((target2d - start2d).dot(forward), 1.0);
                 const double obs_along = std::max(0.0, (ts_pos_.head<2>() - start2d).dot(forward));
-                const double desired_offset = std::max(6.0, safe_dcpa_ * 1.2);
+                const double desired_offset = std::max(7.0, safe_dcpa_ * 1.4);
                 const double bias_start = 0.5;
                 const double bias_full = std::max(2.5, std::min(6.0, obs_along * 0.35));
-                const double bias_end = std::min(path_len, std::max(obs_along + desired_offset, path_len * 0.75));
+                const double pass_along = obs_along + std::max(10.0, safe_dcpa_ * 2.5);
+                const bool can_return_after_pass = path_len > pass_along + 3.0;
+                const double return_start = can_return_after_pass ? pass_along : path_len + 1.0;
 
                 for (size_t i = 1; i + 1 < point_set.size(); ++i)
                 {
@@ -304,10 +306,10 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
 
                     double ramp = std::min(1.0, std::max(0.0, (along - bias_start) / bias_full));
                     double taper = 1.0;
-                    if (along > bias_end)
+                    if (along > return_start)
                     {
-                        const double taper_len = std::max(1.0, path_len - bias_end);
-                        taper = std::max(0.0, 1.0 - (along - bias_end) / taper_len);
+                        const double taper_len = std::max(2.0, path_len - return_start);
+                        taper = std::max(0.0, 1.0 - (along - return_start) / taper_len);
                     }
 
                     const double offset = desired_offset * ramp * ramp * (3.0 - 2.0 * ramp) * taper;
@@ -331,6 +333,8 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
 
                 ROS_WARN("COLREGs HEAD_ON: applied early starboard bias to local initial trajectory, offset=%.2f m, points=%zu",
                          desired_offset, point_set.size());
+                ROS_WARN("COLREGs HEAD_ON: holding starboard lane until along=%.2f m (obs_along=%.2f, path_len=%.2f)",
+                         return_start, obs_along, path_len);
             }
         }
 
