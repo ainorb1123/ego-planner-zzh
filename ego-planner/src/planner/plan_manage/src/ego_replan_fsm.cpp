@@ -927,7 +927,70 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       local_target_pt_ = end_pt_;
     }
 
-    if ((end_pt_ - local_target_pt_).norm() < (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / (2 * planner_manager_->pp_.max_acc_))
+    bool local_target_corrected = false;
+    Eigen::Vector2d corrected_target_dir(0.0, 0.0);
+    if (planner_manager_->has_active_obstacle_ &&
+        planner_manager_->current_scenario_ != EGOPlannerManager::NONE)
+    {
+      Eigen::Vector2d start2d = start_pt_.head<2>();
+      Eigen::Vector2d goal_vec = (end_pt_ - start_pt_).head<2>();
+      double goal_dist = goal_vec.norm();
+      if (goal_dist > 1e-3)
+      {
+        Eigen::Vector2d goal_dir = goal_vec / goal_dist;
+        Eigen::Vector2d target_vec = (local_target_pt_ - start_pt_).head<2>();
+        double target_along = target_vec.dot(goal_dir);
+        double target_lateral = goal_dir.x() * target_vec.y() - goal_dir.y() * target_vec.x();
+        double lookahead = std::min(planning_horizen_, goal_dist);
+        double min_forward = std::min(lookahead * 0.45, goal_dist);
+
+        Eigen::Vector2d obs_rel = (planner_manager_->ts_pos_ - start_pt_).head<2>();
+        double obs_along = obs_rel.dot(goal_dir);
+        double obs_lateral = goal_dir.x() * obs_rel.y() - goal_dir.y() * obs_rel.x();
+        bool target_points_to_obstacle =
+            obs_along > 0.0 &&
+            std::abs(obs_lateral) < planner_manager_->getSafeDCPA() * 1.4 &&
+            target_along > obs_along - planner_manager_->getSafeDCPA() * 1.5 &&
+            target_along < obs_along + planner_manager_->getSafeDCPA() * 2.5 &&
+            std::abs(target_lateral) < planner_manager_->getSafeDCPA() * 1.2;
+
+        if (target_along < min_forward || target_vec.dot(goal_vec) <= 0.0 || target_points_to_obstacle)
+        {
+          Eigen::Vector2d corrected = start2d + goal_dir * lookahead;
+
+          if ((planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON ||
+               planner_manager_->current_scenario_ == EGOPlannerManager::CROSS_GIVE_WAY) &&
+              obs_along > 0.0 && obs_along < lookahead + planner_manager_->getSafeDCPA() * 2.0)
+          {
+            Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
+            double right_offset = std::max(planner_manager_->getSafeDCPA() * 1.1, 4.5);
+            corrected += right_normal * right_offset;
+          }
+          else if (planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING &&
+                   obs_along > 0.0 && obs_along < lookahead + planner_manager_->getSafeDCPA() * 2.0)
+          {
+            Eigen::Vector2d left_normal(-goal_dir.y(), goal_dir.x());
+            double left_offset = std::max(planner_manager_->getSafeDCPA() * 1.1, 4.5);
+            corrected += left_normal * left_offset;
+          }
+
+          ROS_WARN_THROTTLE(0.5,
+                            "Local target corrected toward goal: old=(%.2f, %.2f), new=(%.2f, %.2f), obstacle_risk=%d",
+                            local_target_pt_.x(), local_target_pt_.y(),
+                            corrected.x(), corrected.y(),
+                            target_points_to_obstacle ? 1 : 0);
+          local_target_pt_.x() = corrected.x();
+          local_target_pt_.y() = corrected.y();
+          corrected_target_dir = (local_target_pt_ - start_pt_).head<2>();
+          local_target_corrected = corrected_target_dir.norm() > 1e-3;
+        }
+      }
+    }
+
+    const double stop_dist = (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) /
+                             (2 * planner_manager_->pp_.max_acc_);
+    const bool near_final_target = (end_pt_ - local_target_pt_).norm() < stop_dist;
+    if (near_final_target)
     {
       // local_target_vel_ = (end_pt_ - init_pt_).normalized() * planner_manager_->pp_.max_vel_ * (( end_pt_ - local_target_pt_ ).norm() / ((planner_manager_->pp_.max_vel_*planner_manager_->pp_.max_vel_)/(2*planner_manager_->pp_.max_acc_)));
       // cout << "A" << endl;
@@ -937,6 +1000,15 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     {
       local_target_vel_ = planner_manager_->global_data_.getVelocity(t);
       // cout << "AA" << endl;
+    }
+
+    if (local_target_corrected && !near_final_target)
+    {
+      corrected_target_dir.normalize();
+      const double target_speed = std::min(planner_manager_->pp_.max_vel_,
+                                           std::max(0.5, odom_vel_.head<2>().norm()));
+      local_target_vel_.x() = corrected_target_dir.x() * target_speed;
+      local_target_vel_.y() = corrected_target_dir.y() * target_speed;
     }
   }
 

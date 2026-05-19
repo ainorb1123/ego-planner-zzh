@@ -104,6 +104,7 @@ namespace ego_planner
         std::string head_on_lock_obstacle_{"none"};
         ros::Time head_on_lock_start_;
         Eigen::Vector2d head_on_lock_course_{Eigen::Vector2d(1.0, 0.0)};
+        Eigen::Vector2d head_on_lock_origin_{Eigen::Vector2d::Zero()};
 
         // 鏇存柊杞ㄨ抗淇℃伅
         void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
