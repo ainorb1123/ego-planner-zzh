@@ -288,14 +288,14 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
                 const Eigen::Vector2d target2d = local_target_pt.head<2>();
                 const double path_len = std::max((target2d - start2d).dot(forward), 1.0);
                 const double obs_along = std::max(0.0, (ts_pos_.head<2>() - start2d).dot(forward));
-                const double desired_offset = std::max(7.0, safe_dcpa_ * 1.4);
-                const double bias_start = 0.5;
-                const double bias_full = std::max(2.5, std::min(6.0, obs_along * 0.35));
+                const double desired_offset = std::max(5.5, safe_dcpa_ * 1.1);
+                const double bias_start = 1.0;
+                const double bias_full = std::max(5.0, std::min(10.0, obs_along * 0.55));
                 const double pass_along = obs_along + std::max(10.0, safe_dcpa_ * 2.5);
                 const bool can_return_after_pass = path_len > pass_along + 3.0;
                 const double return_start = can_return_after_pass ? pass_along : path_len + 1.0;
 
-                for (size_t i = 1; i + 1 < point_set.size(); ++i)
+                for (size_t i = 1; i < point_set.size(); ++i)
                 {
                     Eigen::Vector2d rel = point_set[i].head<2>() - start2d;
                     const double along = rel.dot(forward);
@@ -322,12 +322,24 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
                 {
                     const double start_speed =
                         std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[0].head<2>().norm()));
-                    Eigen::Vector2d biased_start_dir = forward + 0.85 * right_normal;
+                    Eigen::Vector2d biased_start_dir = forward + 0.35 * right_normal;
                     if (biased_start_dir.norm() > 1e-3)
                     {
                         biased_start_dir.normalize();
                         start_end_derivatives[0].x() = biased_start_dir.x() * start_speed;
                         start_end_derivatives[0].y() = biased_start_dir.y() * start_speed;
+                    }
+
+                    if (!can_return_after_pass && start_end_derivatives.size() >= 2)
+                    {
+                        Eigen::Vector2d biased_end_dir = forward + 0.25 * right_normal;
+                        if (biased_end_dir.norm() > 1e-3)
+                        {
+                            const double end_speed = start_end_derivatives[1].head<2>().norm();
+                            biased_end_dir.normalize();
+                            start_end_derivatives[1].x() = biased_end_dir.x() * end_speed;
+                            start_end_derivatives[1].y() = biased_end_dir.y() * end_speed;
+                        }
                     }
                 }
 
