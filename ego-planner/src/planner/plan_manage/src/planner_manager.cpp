@@ -82,6 +82,7 @@ namespace ego_planner
             current_scenario_ = NONE;
             head_on_maneuver_lock_ = false;
             head_on_lock_obstacle_ = "none";
+            head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
             last_dcpa_ = 0.0;
             last_tcpa_ = 0.0;
             return false;
@@ -143,6 +144,7 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
             current_scenario_ = NONE;
             head_on_maneuver_lock_ = false;
             head_on_lock_obstacle_ = "none";
+            head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
         }
 
         // 2. 灏嗛伩纰板眬闈俊鎭敞鍏?A*
@@ -278,7 +280,7 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
 
         if (current_scenario_ == HEAD_ON && point_set.size() >= 4)
         {
-            Eigen::Vector2d forward = start_vel.head<2>();
+            Eigen::Vector2d forward = head_on_maneuver_lock_ ? head_on_lock_course_ : start_vel.head<2>();
             if (forward.norm() < 0.1)
             {
                 forward = (local_target_pt - start_pt).head<2>();
@@ -729,6 +731,15 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             head_on_maneuver_lock_ = true;
             head_on_lock_obstacle_ = active_obstacle_name_;
             head_on_lock_start_ = ros::Time::now();
+            head_on_lock_course_ = os_course;
+            if (head_on_lock_course_.norm() < 1e-3)
+            {
+                head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
+            }
+            else
+            {
+                head_on_lock_course_.normalize();
+            }
             ROS_WARN("[COLREGs] HEAD_ON maneuver locked for obstacle: %s",
                      head_on_lock_obstacle_.c_str());
         }

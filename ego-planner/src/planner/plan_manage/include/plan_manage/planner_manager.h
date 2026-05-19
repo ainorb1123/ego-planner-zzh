@@ -83,6 +83,8 @@ namespace ego_planner
         double getLastDCPA() const { return last_dcpa_; }
         double getLastTCPA() const { return last_tcpa_; }
         double getSafeDCPA() const { return safe_dcpa_; }
+        bool hasHeadOnManeuverLock() const { return head_on_maneuver_lock_; }
+        Eigen::Vector2d getHeadOnLockCourse() const { return head_on_lock_course_; }
 
     private:
         /* --- 鍐呴儴绉佹湁绠楁硶涓庢ā鍧?--- */
@@ -101,6 +103,7 @@ namespace ego_planner
         bool head_on_maneuver_lock_{false};
         std::string head_on_lock_obstacle_{"none"};
         ros::Time head_on_lock_start_;
+        Eigen::Vector2d head_on_lock_course_{Eigen::Vector2d(1.0, 0.0)};
 
         // 鏇存柊杞ㄨ抗淇℃伅
         void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
