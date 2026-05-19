@@ -272,6 +272,68 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
             }
         } while (flag_regenerate);
 
+        if (current_scenario_ == HEAD_ON && point_set.size() >= 4)
+        {
+            Eigen::Vector2d forward = start_vel.head<2>();
+            if (forward.norm() < 0.1)
+            {
+                forward = (local_target_pt - start_pt).head<2>();
+            }
+
+            if (forward.norm() > 1e-3)
+            {
+                forward.normalize();
+                const Eigen::Vector2d right_normal(forward.y(), -forward.x());
+                const Eigen::Vector2d start2d = start_pt.head<2>();
+                const Eigen::Vector2d target2d = local_target_pt.head<2>();
+                const double path_len = std::max((target2d - start2d).dot(forward), 1.0);
+                const double obs_along = std::max(0.0, (ts_pos_.head<2>() - start2d).dot(forward));
+                const double desired_offset = std::max(6.0, safe_dcpa_ * 1.2);
+                const double bias_start = 0.5;
+                const double bias_full = std::max(2.5, std::min(6.0, obs_along * 0.35));
+                const double bias_end = std::min(path_len, std::max(obs_along + desired_offset, path_len * 0.75));
+
+                for (size_t i = 1; i + 1 < point_set.size(); ++i)
+                {
+                    Eigen::Vector2d rel = point_set[i].head<2>() - start2d;
+                    const double along = rel.dot(forward);
+                    if (along <= bias_start)
+                    {
+                        continue;
+                    }
+
+                    double ramp = std::min(1.0, std::max(0.0, (along - bias_start) / bias_full));
+                    double taper = 1.0;
+                    if (along > bias_end)
+                    {
+                        const double taper_len = std::max(1.0, path_len - bias_end);
+                        taper = std::max(0.0, 1.0 - (along - bias_end) / taper_len);
+                    }
+
+                    const double offset = desired_offset * ramp * ramp * (3.0 - 2.0 * ramp) * taper;
+                    Eigen::Vector2d shifted = point_set[i].head<2>() + right_normal * offset;
+                    point_set[i].x() = shifted.x();
+                    point_set[i].y() = shifted.y();
+                }
+
+                if (!start_end_derivatives.empty())
+                {
+                    const double start_speed =
+                        std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[0].head<2>().norm()));
+                    Eigen::Vector2d biased_start_dir = forward + 0.85 * right_normal;
+                    if (biased_start_dir.norm() > 1e-3)
+                    {
+                        biased_start_dir.normalize();
+                        start_end_derivatives[0].x() = biased_start_dir.x() * start_speed;
+                        start_end_derivatives[0].y() = biased_start_dir.y() * start_speed;
+                    }
+                }
+
+                ROS_WARN("COLREGs HEAD_ON: applied early starboard bias to local initial trajectory, offset=%.2f m, points=%zu",
+                         desired_offset, point_set.size());
+            }
+        }
+
         Eigen::MatrixXd ctrl_pts;
         UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
 
