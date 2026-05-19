@@ -422,17 +422,15 @@ double HybridAStar::calculateThreatCost(const Eigen::Vector2d& node_pos)
     const double ellipse_value =
         (ts_along * ts_along) / (longitudinal_clearance * longitudinal_clearance) +
         (ts_lateral * ts_lateral) / (lateral_clearance * lateral_clearance);
-    if (ellipse_value < 1.0)
+    const double normalized_boundary_dist = std::sqrt(std::max(0.0, ellipse_value));
+    const double boundary_margin = 0.45;
+    if (normalized_boundary_dist < 1.0 + boundary_margin)
     {
-        const double ratio = 1.0 - ellipse_value;
-        cost += 2600.0 * ratio * ratio;
-    }
-
-    const double dist_to_pred = rel_to_ts_pred.norm();
-    if (dist_to_pred < desired_clearance * 2.0)
-    {
-        const double ratio = (desired_clearance * 2.0 - dist_to_pred) / (desired_clearance * 2.0);
-        cost += 900.0 * ratio * ratio;
+        const double penetration = std::max(0.0, 1.0 - normalized_boundary_dist);
+        const double near_boundary = std::max(0.0, 1.0 + boundary_margin - normalized_boundary_dist) /
+                                     boundary_margin;
+        cost += 3200.0 * penetration * penetration;
+        cost += 1200.0 * near_boundary * near_boundary;
     }
 
     if (colregs_mode_ == 1)
@@ -499,6 +497,46 @@ double HybridAStar::calculateThreatCost(const Eigen::Vector2d& node_pos)
     return cost;
 }
 
+double HybridAStar::calculateInflatedMapProximityCost(const Eigen::Vector2d& node_pos) const
+{
+    if (!grid_map_)
+        return 0.0;
+
+    const double resolution = std::max(0.05, grid_map_->getResolution());
+    const double influence_dist = std::max(2.5, safe_dcpa_ * 0.6);
+    const int max_step = static_cast<int>(std::ceil(influence_dist / resolution));
+
+    if (grid_map_->getInflateOccupancy2d(node_pos) > 0)
+    {
+        return 6000.0;
+    }
+
+    double min_dist = influence_dist + resolution;
+    for (int dx = -max_step; dx <= max_step; ++dx)
+    {
+        for (int dy = -max_step; dy <= max_step; ++dy)
+        {
+            if (dx == 0 && dy == 0)
+                continue;
+
+            const double dist = resolution * std::sqrt(static_cast<double>(dx * dx + dy * dy));
+            if (dist >= min_dist || dist > influence_dist)
+                continue;
+
+            Eigen::Vector2d sample = node_pos + Eigen::Vector2d(dx * resolution, dy * resolution);
+            if (grid_map_->getInflateOccupancy2d(sample) > 0)
+            {
+                min_dist = dist;
+            }
+        }
+    }
+
+    if (min_dist > influence_dist)
+        return 0.0;
+
+    const double ratio = (influence_dist - min_dist) / influence_dist;
+    return 900.0 * ratio * ratio;
+}
 double HybridAStar::calculateSteeringSmoothnessCost(const std::shared_ptr<HybridNode>& current,
                                                     double steering_angle) const
 {
@@ -758,9 +796,11 @@ bool HybridAStar::search(double step_size,
                 }
                 edge_cost = std::max(edge_cost, step_size_);
 
-                double threat_cost = calculateThreatCost(Eigen::Vector2d(new_pose.x(), new_pose.y()));
+                Eigen::Vector2d new_pos2d(new_pose.x(), new_pose.y());
+                double threat_cost = calculateThreatCost(new_pos2d);
+                double map_proximity_cost = calculateInflatedMapProximityCost(new_pos2d);
                 double smoothness_cost = calculateSteeringSmoothnessCost(current, steering_angle);
-                double tentative_g = current->gScore + edge_cost + threat_cost + smoothness_cost;
+                double tentative_g = current->gScore + edge_cost + threat_cost + map_proximity_cost + smoothness_cost;
 
                 if (new_node->state != HybridNode::OPENSET || tentative_g < new_node->gScore)
                 {
@@ -832,9 +872,11 @@ bool HybridAStar::search(double step_size,
                 // 反向搜索也应用海事避碰规�?
                 // 关键：尽管本船正向自上而下(反向转向)，但需要遵守基于起始位置的COLREGS规则
                 // 每一个反向路点都需要检查其COLREGS威胁
-                double threat_cost = calculateThreatCost(Eigen::Vector2d(new_pose.x(), new_pose.y()));
+                Eigen::Vector2d new_pos2d(new_pose.x(), new_pose.y());
+                double threat_cost = calculateThreatCost(new_pos2d);
+                double map_proximity_cost = calculateInflatedMapProximityCost(new_pos2d);
                 double smoothness_cost = calculateSteeringSmoothnessCost(current, steering_angle);
-                double tentative_g = current->gScore + edge_cost + threat_cost + smoothness_cost;
+                double tentative_g = current->gScore + edge_cost + threat_cost + map_proximity_cost + smoothness_cost;
 
                 if (new_node->state != HybridNode::OPENSET || tentative_g < new_node->gScore)
                 {

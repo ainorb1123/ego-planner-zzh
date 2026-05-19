@@ -110,6 +110,7 @@ private:
     double safe_dcpa_{3.5};
 
     double calculateThreatCost(const Eigen::Vector2d& node_pos);
+    double calculateInflatedMapProximityCost(const Eigen::Vector2d& node_pos) const;
     double calculateSteeringSmoothnessCost(const std::shared_ptr<HybridNode>& current,
                                            double steering_angle) const;
     // ===================================
