@@ -80,6 +80,8 @@ namespace ego_planner
         {
             active_obstacle_name_ = "none";
             current_scenario_ = NONE;
+            head_on_maneuver_lock_ = false;
+            head_on_lock_obstacle_ = "none";
             last_dcpa_ = 0.0;
             last_tcpa_ = 0.0;
             return false;
@@ -139,6 +141,8 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
         else
         {
             current_scenario_ = NONE;
+            head_on_maneuver_lock_ = false;
+            head_on_lock_obstacle_ = "none";
         }
 
         // 2. 灏嗛伩纰板眬闈俊鎭敞鍏?A*
@@ -622,15 +626,6 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
         last_dcpa_ = dcpa;
         last_tcpa_ = tcpa;
 
-        if (dist > colregs_dist_threshold_ || tcpa <= 0 || dcpa > safe_dcpa_) {
-            current_scenario_ = NONE;
-            ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 0 | filtered | dist: %.2f/%.2f | DCPA: %.2f/%.2f | TCPA: %.2f",
-                              dist, colregs_dist_threshold_, dcpa, safe_dcpa_, tcpa);
-            return;
-        }
-
-        
-
         double os_yaw = atan2(v_os.y(), v_os.x());
         double ts_yaw = atan2(v_ts.y(), v_ts.x());
         
@@ -641,6 +636,33 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
 
         Eigen::Vector2d os_course = v_os.norm() > 0.05 ? v_os.normalized() : Eigen::Vector2d(cos(os_yaw), sin(os_yaw));
         double lateral_to_ts = os_course.x() * rel_pos.y() - os_course.y() * rel_pos.x();
+        double along_to_ts = rel_pos.dot(os_course);
+
+        if (head_on_maneuver_lock_)
+        {
+            const bool same_obstacle = head_on_lock_obstacle_ == active_obstacle_name_;
+            const double lock_time = (ros::Time::now() - head_on_lock_start_).toSec();
+            const bool passed_target = along_to_ts < -safe_dcpa_;
+            const bool safely_separated = lock_time > 3.0 && tcpa < -1.0 && dcpa > safe_dcpa_ * 1.2;
+
+            if (same_obstacle && !passed_target && !safely_separated)
+            {
+                current_scenario_ = HEAD_ON;
+                ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 1 | locked starboard maneuver | lateral: %.2f | along: %.2f | DCPA: %.2f | TCPA: %.2f",
+                                  lateral_to_ts, along_to_ts, dcpa, tcpa);
+                return;
+            }
+
+            head_on_maneuver_lock_ = false;
+            head_on_lock_obstacle_ = "none";
+        }
+
+        if (dist > colregs_dist_threshold_ || tcpa <= 0 || dcpa > safe_dcpa_) {
+            current_scenario_ = NONE;
+            ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 0 | filtered | dist: %.2f/%.2f | DCPA: %.2f/%.2f | TCPA: %.2f",
+                              dist, colregs_dist_threshold_, dcpa, safe_dcpa_, tcpa);
+            return;
+        }
         bool has_clear_colregs_side = false;
         if ((current_scenario_ == HEAD_ON || current_scenario_ == CROSS_GIVE_WAY) &&
             lateral_to_ts > safe_dcpa_ * 0.8)
@@ -653,7 +675,7 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             has_clear_colregs_side = true;
         }
 
-        if (has_clear_colregs_side && dcpa > safe_dcpa_ * 0.8)
+        if (!head_on_maneuver_lock_ && has_clear_colregs_side && dcpa > safe_dcpa_ * 0.8)
         {
             current_scenario_ = NONE;
             ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 0 | cleared by maneuver | lateral: %.2f | DCPA: %.2f/%.2f | TCPA: %.2f",
@@ -700,6 +722,15 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
 
         if (consistency_count >= 3 || detected_scenario == NONE) {
             current_scenario_ = detected_scenario;
+        }
+
+        if (current_scenario_ == HEAD_ON && !head_on_maneuver_lock_)
+        {
+            head_on_maneuver_lock_ = true;
+            head_on_lock_obstacle_ = active_obstacle_name_;
+            head_on_lock_start_ = ros::Time::now();
+            ROS_WARN("[COLREGs] HEAD_ON maneuver locked for obstacle: %s",
+                     head_on_lock_obstacle_.c_str());
         }
 
         ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: %d | DCPA: %.2f | TCPA: %.2f", (int)current_scenario_, dcpa, tcpa);

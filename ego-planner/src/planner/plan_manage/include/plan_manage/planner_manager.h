@@ -98,6 +98,9 @@ namespace ego_planner
         double safe_dcpa_{3.5};               // 瀹夊叏璺濈闃堝€?
         int continuous_failures_count_{0};
         std::vector<DynamicObstacleState> dynamic_obstacles_;
+        bool head_on_maneuver_lock_{false};
+        std::string head_on_lock_obstacle_{"none"};
+        ros::Time head_on_lock_start_;
 
         // 鏇存柊杞ㄨ抗淇℃伅
         void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
