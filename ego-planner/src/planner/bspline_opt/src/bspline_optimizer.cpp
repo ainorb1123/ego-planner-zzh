@@ -131,7 +131,7 @@ namespace ego_planner
             double path_yaw = segmentYaw(in2d, out2d);
             if (a_star_->search(/*(in-out).norm()/10+0.05*/ 0.1, in2d, path_yaw, out2d, path_yaw))
             {
-                a_star_pathes.push_back(a_star_->getPath());
+                a_star_pathes.push_back(a_star_->getPositionPath());
             }
             else
             {
@@ -778,7 +778,7 @@ namespace ego_planner
                 double path_yaw = segmentYaw(in2d, out2d);
                 if (a_star_->search(/*(in-out).norm()/10+0.05*/ 0.1, in2d, path_yaw, out2d, path_yaw))
                 {
-                    a_star_pathes.push_back(a_star_->getPath());
+                    a_star_pathes.push_back(a_star_->getPositionPath());
                 }
                 else
                 {

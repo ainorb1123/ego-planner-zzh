@@ -938,6 +938,11 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       if (goal_dist > 1e-3)
       {
         Eigen::Vector2d goal_dir = goal_vec / goal_dist;
+        if (planner_manager_->hasHeadOnManeuverLock() &&
+            planner_manager_->getHeadOnLockCourse().norm() > 0.05)
+        {
+          goal_dir = planner_manager_->getHeadOnLockCourse().normalized();
+        }
         Eigen::Vector2d target_vec = (local_target_pt_ - start_pt_).head<2>();
         double target_along = target_vec.dot(goal_dir);
         double target_lateral = goal_dir.x() * target_vec.y() - goal_dir.y() * target_vec.x();
@@ -953,8 +958,14 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
             target_along > obs_along - planner_manager_->getSafeDCPA() * 1.5 &&
             target_along < obs_along + planner_manager_->getSafeDCPA() * 2.5 &&
             std::abs(target_lateral) < planner_manager_->getSafeDCPA() * 1.2;
+        bool locked_head_on_target_leaves_lane =
+            planner_manager_->hasHeadOnManeuverLock() &&
+            target_lateral > -planner_manager_->getSafeDCPA() * 0.8;
 
-        if (target_along < min_forward || target_vec.dot(goal_vec) <= 0.0 || target_points_to_obstacle)
+        if (target_along < min_forward ||
+            target_vec.dot(goal_vec) <= 0.0 ||
+            target_points_to_obstacle ||
+            locked_head_on_target_leaves_lane)
         {
           Eigen::Vector2d corrected = start2d + goal_dir * lookahead;
 
@@ -972,6 +983,12 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
             Eigen::Vector2d left_normal(-goal_dir.y(), goal_dir.x());
             double left_offset = std::max(planner_manager_->getSafeDCPA() * 1.1, 4.5);
             corrected += left_normal * left_offset;
+          }
+          else if (planner_manager_->hasHeadOnManeuverLock())
+          {
+            Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
+            double right_offset = std::max(planner_manager_->getSafeDCPA() * 1.0, 4.0);
+            corrected += right_normal * right_offset;
           }
 
           ROS_WARN_THROTTLE(0.5,

@@ -360,11 +360,25 @@ void HybridAStar::reconstructBidirectionalPath(const std::shared_ptr<HybridNode>
     // 合并路径：正向路�?+ 反向路径（去掉重复的相遇点）
     hybrid_path_.insert(hybrid_path_.end(), forward_path.begin(), forward_path.end());
     if (!backward_path.empty()) {
-        hybrid_path_.insert(hybrid_path_.end(), backward_path.begin() + 1, backward_path.end());
+        const double meet_dist = (forward_path.back()->pose.head<2>() - backward_path.front()->pose.head<2>()).norm();
+        if (meet_dist < std::max(1e-3, step_size_ * 0.25)) {
+            hybrid_path_.insert(hybrid_path_.end(), backward_path.begin() + 1, backward_path.end());
+        } else {
+            hybrid_path_.insert(hybrid_path_.end(), backward_path.begin(), backward_path.end());
+        }
     }
     shortcutHybridPath();
 }
 
+double HybridAStar::angleDiff(double a, double b) const
+{
+    double diff = a - b;
+    while (diff > M_PI)
+        diff -= 2.0 * M_PI;
+    while (diff < -M_PI)
+        diff += 2.0 * M_PI;
+    return std::abs(diff);
+}
 bool HybridAStar::isLineCollisionFree(const Eigen::Vector3d& start,
                                       const Eigen::Vector3d& goal) const
 {
@@ -380,6 +394,12 @@ bool HybridAStar::isLineCollisionFree(const Eigen::Vector3d& start,
     const double sample_step = std::max(0.05, step_size_ * 0.5);
     const int samples = std::max(1, static_cast<int>(std::ceil(length / sample_step)));
     const double max_soft_cost = 2500.0;
+    const double line_heading = std::atan2(delta.y(), delta.x());
+    if (angleDiff(start.z(), line_heading) > M_PI / 2.0 ||
+        angleDiff(goal.z(), line_heading) > M_PI / 2.0)
+    {
+        return false;
+    }
 
     for (int i = 0; i <= samples; ++i)
     {
@@ -881,7 +901,7 @@ bool HybridAStar::search(double step_size,
                 double edge_cost = 0.0;
                 for (size_t i = 1; i < trajectory.size(); ++i)
                 {
-                    edge_cost += (trajectory[i] - trajectory[i-1]).norm();
+                    edge_cost += (trajectory[i].head<2>() - trajectory[i-1].head<2>()).norm();
                 }
                 edge_cost = std::max(edge_cost, step_size_);
 
@@ -954,7 +974,7 @@ bool HybridAStar::search(double step_size,
                 double edge_cost = 0.0;
                 for (size_t i = 1; i < trajectory.size(); ++i)
                 {
-                    edge_cost += (trajectory[i] - trajectory[i-1]).norm();
+                    edge_cost += (trajectory[i].head<2>() - trajectory[i-1].head<2>()).norm();
                 }
                 edge_cost = std::max(edge_cost, step_size_);
 

@@ -113,6 +113,7 @@ private:
     double calculateInflatedMapProximityCost(const Eigen::Vector2d& node_pos) const;
     double calculateSteeringSmoothnessCost(const std::shared_ptr<HybridNode>& current,
                                            double steering_angle) const;
+    double angleDiff(double a, double b) const;
     bool isLineCollisionFree(const Eigen::Vector3d& start,
                              const Eigen::Vector3d& goal) const;
     void shortcutHybridPath();

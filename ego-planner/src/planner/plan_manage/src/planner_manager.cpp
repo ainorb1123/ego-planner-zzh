@@ -655,14 +655,30 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
         {
             const bool same_obstacle = head_on_lock_obstacle_ == active_obstacle_name_;
             const double lock_time = (ros::Time::now() - head_on_lock_start_).toSec();
-            const bool passed_target = along_to_ts < -safe_dcpa_;
-            const bool safely_separated = lock_time > 3.0 && tcpa < -1.0 && dcpa > safe_dcpa_ * 1.2;
+            Eigen::Vector2d lock_course = head_on_lock_course_;
+            if (lock_course.norm() < 1e-3)
+            {
+                lock_course = os_course;
+            }
+            else
+            {
+                lock_course.normalize();
+            }
+            const double locked_along_to_ts = rel_pos.dot(lock_course);
+            const double locked_lateral_to_ts = lock_course.x() * rel_pos.y() - lock_course.y() * rel_pos.x();
+            const bool passed_target = locked_along_to_ts < -safe_dcpa_;
+            const bool clear_after_abeam =
+                lock_time > 5.0 &&
+                locked_along_to_ts < safe_dcpa_ * 0.5 &&
+                std::abs(locked_lateral_to_ts) > safe_dcpa_ * 1.5 &&
+                tcpa < -1.0 &&
+                dcpa > safe_dcpa_ * 1.5;
 
-            if (same_obstacle && !passed_target && !safely_separated)
+            if (same_obstacle && !passed_target && !clear_after_abeam)
             {
                 current_scenario_ = HEAD_ON;
                 ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 1 | locked starboard maneuver | lateral: %.2f | along: %.2f | DCPA: %.2f | TCPA: %.2f",
-                                  lateral_to_ts, along_to_ts, dcpa, tcpa);
+                                  locked_lateral_to_ts, locked_along_to_ts, dcpa, tcpa);
                 return;
             }
 
