@@ -13,6 +13,7 @@
 #include "std_msgs/UInt8.h"
 #include "visualization_msgs/Marker.h"
 #include <ros/ros.h>
+#include <algorithm>
 #include "time.h"
 
 #define PI 3.1415926
@@ -165,8 +166,13 @@ void MPC_calculate(double &t_cur)
         for(int i=0;i<N;i++)
         {
 
-            t_k = t_cur+i*t_step;
-            t_k_1 = t_cur+(i+1)*t_step;
+            const double eval_t = std::min(std::max(t_cur + i * t_step, 0.0), traj_duration_);
+            const double eval_t_next = std::min(std::max(t_cur + (i + 1) * t_step, 0.0), traj_duration_);
+            const double yaw_t = std::min(eval_t, std::max(0.0, traj_duration_ - t_step));
+            const double yaw_t_next = std::min(yaw_t + t_step, traj_duration_);
+
+            t_k = eval_t;
+            t_k_1 = eval_t_next;
 
             pos_r = traj_[0].evaluateDeBoor(t_k);
             pos_r_1 = traj_[0].evaluateDeBoor(t_k_1);
@@ -179,20 +185,33 @@ void MPC_calculate(double &t_cur)
             v_r_1(2)=0;
             v_r_2(2)=0;
             v_linear_1 = v_r_1.norm();
-            if((t_k-traj_duration_)>=0)
+            Eigen::Vector3d yaw_v_1 = traj_[1].evaluateDeBoor(yaw_t);
+            Eigen::Vector3d yaw_v_2 = traj_[1].evaluateDeBoor(yaw_t_next);
+            yaw_v_1(2) = 0;
+            yaw_v_2(2) = 0;
+            if (yaw_v_1.head<2>().norm() < 1e-3)
             {
-                x_r(2) = atan2((pos_r-pos_final)(1),(pos_r-pos_final)(0));
+                yaw_v_1 = pos_r_1 - pos_r;
+                yaw_v_1(2) = 0;
+            }
+            if (yaw_v_2.head<2>().norm() < 1e-3)
+            {
+                yaw_v_2 = yaw_v_1;
+            }
+            if(yaw_v_1.head<2>().norm() < 1e-3)
+            {
+                x_r(2) = yaw;
             }
             else
             {
                 //x_r(2) = atan2((pos_r_1-pos_r)(1),(pos_r_1-pos_r)(0));
-                x_r(2) = atan2(v_r_1(1),v_r_1(0));
+                x_r(2) = atan2(yaw_v_1(1),yaw_v_1(0));
             }
 
 
 
-            double yaw1 = atan2(v_r_1(1),v_r_1(0));
-            double yaw2 = atan2(v_r_2(1),v_r_2(0));
+            double yaw1 = atan2(yaw_v_1(1),yaw_v_1(0));
+            double yaw2 = atan2(yaw_v_2(1),yaw_v_2(0));
 
             if(abs(yaw2-yaw1)>PI)
             {
