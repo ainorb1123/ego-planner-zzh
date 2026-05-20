@@ -94,6 +94,8 @@ namespace ego_planner
     int current_wp_;
 
     bool flag_escape_emergency_;
+    bool was_in_head_on_maneuver_{false};
+    bool force_head_on_poly_replan_once_{false};
 
     /* ROS utils */
     ros::NodeHandle node_;
@@ -116,6 +118,7 @@ namespace ego_planner
 
     void planGlobalTrajbyGivenWps();
     void getLocalTarget();
+    bool adjustLocalTargetForHeadOn(double stop_dist);
     void publishBspline();
 
     /* ROS functions */

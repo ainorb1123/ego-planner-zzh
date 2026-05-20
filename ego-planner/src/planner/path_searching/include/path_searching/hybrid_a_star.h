@@ -244,6 +244,14 @@ public:
     }
 
     void setColregsMode(int mode) { colregs_mode_ = mode; }
+    void clearTargetShipInfo()
+    {
+        has_target_ship_ = false;
+        colregs_mode_ = 0;
+        ts_pos_.setZero();
+        ts_vel_.setZero();
+        os_vel_.setZero();
+    }
     void setStartPos(const Eigen::Vector2d& pos) { start_pos_ = pos; }
     void setTargetShipInfo(const Eigen::Vector2d& pos, const Eigen::Vector2d& vel,
                           const Eigen::Vector2d& os_vel)

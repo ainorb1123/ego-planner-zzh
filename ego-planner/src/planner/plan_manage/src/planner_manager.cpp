@@ -1,4 +1,4 @@
-﻿#include <plan_manage/planner_manager.h>
+#include <plan_manage/planner_manager.h>
 #include <algorithm>
 #include <cmath>
 #include <thread>
@@ -7,6 +7,133 @@ namespace ego_planner
 {
     EGOPlannerManager::EGOPlannerManager() : ts_pos_(Eigen::Vector3d::Zero()), ts_vel_(Eigen::Vector3d::Zero()) {}
     EGOPlannerManager::~EGOPlannerManager() { std::cout << "des manager" << std::endl; }
+
+    void EGOPlannerManager::resetHeadOnManeuver()
+    {
+        head_on_maneuver_lock_ = false;
+        head_on_lock_obstacle_ = "none";
+        head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
+        head_on_lock_origin_ = Eigen::Vector2d::Zero();
+    }
+
+    void EGOPlannerManager::updateAStarHeadOnContext(const Eigen::Vector3d& start_pt,
+                                                      const Eigen::Vector3d& start_vel)
+    {
+        if (!a_star_)
+            return;
+
+        a_star_->setStartPos(start_pt.head<2>());
+        a_star_->setSafeDcpa(safe_dcpa_);
+
+        if (current_scenario_ != HEAD_ON)
+        {
+            a_star_->clearTargetShipInfo();
+            return;
+        }
+
+        a_star_->setTargetShipInfo(ts_pos_.head<2>(), ts_vel_.head<2>(), start_vel.head<2>());
+        a_star_->setColregsMode((int)current_scenario_);
+        a_star_->setSafetyParams(last_dcpa_, last_tcpa_);
+    }
+
+    void EGOPlannerManager::applyHeadOnInitialBias(const Eigen::Vector3d& start_pt,
+                                                   const Eigen::Vector3d& start_vel,
+                                                   const Eigen::Vector3d& local_target_pt,
+                                                   std::vector<Eigen::Vector3d>& point_set,
+                                                   std::vector<Eigen::Vector3d>& start_end_derivatives)
+    {
+        if (current_scenario_ != HEAD_ON || point_set.size() < 4)
+            return;
+
+        Eigen::Vector2d forward = head_on_maneuver_lock_ ? head_on_lock_course_ : start_vel.head<2>();
+        if (forward.norm() < 0.1)
+        {
+            forward = (local_target_pt - start_pt).head<2>();
+        }
+        if (forward.norm() <= 1e-3)
+            return;
+
+        forward.normalize();
+        const Eigen::Vector2d right_normal(forward.y(), -forward.x());
+        const Eigen::Vector2d start2d = start_pt.head<2>();
+        const Eigen::Vector2d lane_origin = head_on_maneuver_lock_ ? head_on_lock_origin_ : start2d;
+        const Eigen::Vector2d target2d = local_target_pt.head<2>();
+        const double path_len = std::max((target2d - start2d).dot(forward), 1.0);
+        const double obs_along = std::max(0.0, (ts_pos_.head<2>() - lane_origin).dot(forward));
+        const double desired_offset = std::max(5.5, safe_dcpa_ * 1.1);
+        const double bias_start = 1.0;
+        const double bias_full = std::max(5.0, std::min(10.0, obs_along * 0.55));
+        const double start_along_global = (start2d - lane_origin).dot(forward);
+        const double local_target_along = start_along_global + path_len;
+        const double obs_along_from_start = (ts_pos_.head<2>() - start2d).dot(forward);
+        const bool obstacle_abeam_or_passed = obs_along_from_start < safe_dcpa_ * 1.5;
+        const double return_start = obstacle_abeam_or_passed
+                                        ? std::max(start_along_global + bias_start + 1.0,
+                                                   start_along_global + path_len * 0.35)
+                                        : local_target_along + 1.0;
+        const bool hold_until_local_target = return_start > local_target_along;
+        const double current_right_offset = (start2d - lane_origin).dot(right_normal);
+        double last_right_offset = std::max(0.0, current_right_offset);
+
+        for (size_t i = 1; i < point_set.size(); ++i)
+        {
+            Eigen::Vector2d rel = point_set[i].head<2>() - lane_origin;
+            const double along = rel.dot(forward);
+            if (along <= start_along_global + bias_start)
+                continue;
+
+            const double ramp = std::min(1.0, std::max(0.0, (along - start_along_global - bias_start) / bias_full));
+            double taper = 1.0;
+            if (along > return_start)
+            {
+                const double taper_len = std::max(2.0, local_target_along - return_start);
+                taper = std::max(0.0, 1.0 - (along - return_start) / taper_len);
+            }
+
+            const double offset = desired_offset * ramp * ramp * (3.0 - 2.0 * ramp) * taper;
+            const double original_right = rel.dot(right_normal);
+            const double target_right = std::max(original_right, offset);
+            const double monotonic_right = hold_until_local_target
+                                               ? std::max(last_right_offset, target_right)
+                                               : target_right;
+            last_right_offset = monotonic_right;
+
+            Eigen::Vector2d shifted = lane_origin + forward * along + right_normal * monotonic_right;
+            point_set[i].x() = shifted.x();
+            point_set[i].y() = shifted.y();
+        }
+
+        if (!start_end_derivatives.empty())
+        {
+            const double start_speed =
+                std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[0].head<2>().norm()));
+            const double start_right_gain = current_right_offset < desired_offset * 0.8 ? 0.35 : 0.05;
+            Eigen::Vector2d biased_start_dir = forward + start_right_gain * right_normal;
+            if (biased_start_dir.norm() > 1e-3)
+            {
+                biased_start_dir.normalize();
+                start_end_derivatives[0].x() = biased_start_dir.x() * start_speed;
+                start_end_derivatives[0].y() = biased_start_dir.y() * start_speed;
+            }
+
+            if (hold_until_local_target && start_end_derivatives.size() >= 2)
+            {
+                Eigen::Vector2d biased_end_dir = forward + 0.25 * right_normal;
+                if (biased_end_dir.norm() > 1e-3)
+                {
+                    const double end_speed = start_end_derivatives[1].head<2>().norm();
+                    biased_end_dir.normalize();
+                    start_end_derivatives[1].x() = biased_end_dir.x() * end_speed;
+                    start_end_derivatives[1].y() = biased_end_dir.y() * end_speed;
+                }
+            }
+        }
+
+        ROS_WARN("COLREGs HEAD_ON: applied early starboard bias to local initial trajectory, offset=%.2f m, points=%zu",
+                 desired_offset, point_set.size());
+        ROS_WARN("COLREGs HEAD_ON: holding starboard lane until along=%.2f m (obs_along=%.2f, path_len=%.2f)",
+                 return_start, obs_along, path_len);
+    }
 
     void EGOPlannerManager::updateDynamicObstacle(const std::string& name, const Eigen::Vector3d& pos,
                                                   const Eigen::Vector3d& vel, const ros::Time& stamp)
@@ -80,10 +207,7 @@ namespace ego_planner
         {
             active_obstacle_name_ = "none";
             current_scenario_ = NONE;
-            head_on_maneuver_lock_ = false;
-            head_on_lock_obstacle_ = "none";
-            head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
-            head_on_lock_origin_ = Eigen::Vector2d::Zero();
+            resetHeadOnManeuver();
             last_dcpa_ = 0.0;
             last_tcpa_ = 0.0;
             return false;
@@ -97,7 +221,7 @@ namespace ego_planner
 
     void EGOPlannerManager::initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis)
     {
-        /* 璇诲彇鍩虹鍙傛暟 */
+        /* 读取基础参数 */
         nh.param("manager/max_vel", pp_.max_vel_, -1.0);
         nh.param("manager/max_acc", pp_.max_acc_, -1.0);
         nh.param("manager/max_jerk", pp_.max_jerk_, -1.0);
@@ -115,8 +239,8 @@ namespace ego_planner
         bspline_optimizer_rebound_->setParam(nh);
         bspline_optimizer_rebound_->setEnvironment(grid_map_);
         
-        // 鍒濆鍖栧弻鍚戞贩鍚圓* 骞舵寕杞藉埌浼樺寲鍣ㄤ笅
-        a_star_.reset(new HybridAStar(0.1745, 1.0)); // 鍙屽悜娣峰悎A*锛氳浆寮搴?0搴︼紝杞悜鍗婂緞1.0m
+        // 初始化双向混合A* 并挂载到优化器下
+        a_star_.reset(new HybridAStar(0.1745, 1.0)); // 双向混合A*：转弯角�?0度，转向半径1.0m
         a_star_->setVelocity(1.0);
         a_star_->setMaxSteeringAngle(0.5);
         a_star_->initGridMap(grid_map_, Eigen::Vector2i(100, 100));
@@ -143,30 +267,19 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
         else
         {
             current_scenario_ = NONE;
-            head_on_maneuver_lock_ = false;
-            head_on_lock_obstacle_ = "none";
-            head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
-            head_on_lock_origin_ = Eigen::Vector2d::Zero();
+            resetHeadOnManeuver();
         }
 
-        // 2. 灏嗛伩纰板眬闈俊鎭敞鍏?A*
-        if (a_star_) {
-            a_star_->setTargetShipInfo(ts_pos_.head<2>(), ts_vel_.head<2>(), start_vel.head<2>());
-            a_star_->setColregsMode((int)current_scenario_);
-            a_star_->setStartPos(start_pt.head<2>());
-            // 浼犲叆DCPA/TCPA瀹夊叏鏉冮噸鍙傛暟
-            a_star_->setSafetyParams(last_dcpa_, last_tcpa_);
-            a_star_->setSafeDcpa(safe_dcpa_);
-        }
+        updateAStarHeadOnContext(start_pt, start_vel);
 
         if ((start_pt - local_target_pt).norm() < 0.2)
         {
-            continuous_failures_count_ = 0; // 绂荤洰鏍囪繎涓嶇畻澶辫触
+            continuous_failures_count_ = 0; // 离目标近不算失败
             return true; 
         }
 
         ros::Time t_start = ros::Time::now();
-        ros::Duration t_init, t_opt; // 瀹氫箟璁℃椂鍙橀噺
+        ros::Duration t_init, t_opt; // 定义计时变量
 
         double ts = (start_pt - local_target_pt).norm() > 0.1 ? pp_.ctrl_pt_dist / pp_.max_vel_ * 1.2 : pp_.ctrl_pt_dist / pp_.max_vel_ * 5;
         
@@ -174,7 +287,7 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
         static bool flag_first_call = true, flag_force_polynomial = false;
         bool flag_regenerate = false;
 
-        /*** STEP 1: 璺緞鍒濆鍖?***/
+        /*** STEP 1: 路径初始�?***/
         do {
             point_set.clear();
             start_end_derivatives.clear();
@@ -204,7 +317,7 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
                         last_pt = pt;
                         point_set.push_back(pt);
                     }
-                } while ((flag_too_far || point_set.size() < 7) && ts_tmp > 0.01); // 澧炲姞 ts 淇濇姢
+                } while ((flag_too_far || point_set.size() < 7) && ts_tmp > 0.01); // 增加 ts 保护
                 
                 start_end_derivatives.push_back(gl_traj.evaluateVel(0));
                 start_end_derivatives.push_back(local_target_vel);
@@ -280,97 +393,12 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
             }
         } while (flag_regenerate);
 
-        if (current_scenario_ == HEAD_ON && point_set.size() >= 4)
-        {
-            Eigen::Vector2d forward = head_on_maneuver_lock_ ? head_on_lock_course_ : start_vel.head<2>();
-            if (forward.norm() < 0.1)
-            {
-                forward = (local_target_pt - start_pt).head<2>();
-            }
-
-            if (forward.norm() > 1e-3)
-            {
-                forward.normalize();
-                const Eigen::Vector2d right_normal(forward.y(), -forward.x());
-                const Eigen::Vector2d start2d = start_pt.head<2>();
-                const Eigen::Vector2d lane_origin = head_on_maneuver_lock_ ? head_on_lock_origin_ : start2d;
-                const Eigen::Vector2d target2d = local_target_pt.head<2>();
-                const double path_len = std::max((target2d - start2d).dot(forward), 1.0);
-                const double obs_along = std::max(0.0, (ts_pos_.head<2>() - lane_origin).dot(forward));
-                const double desired_offset = std::max(5.5, safe_dcpa_ * 1.1);
-                const double bias_start = 1.0;
-                const double bias_full = std::max(5.0, std::min(10.0, obs_along * 0.55));
-                const bool can_return_after_pass = false;
-                const double return_start = path_len + 1.0;
-                const double current_right_offset = (start2d - lane_origin).dot(right_normal);
-                double last_right_offset = std::max(0.0, current_right_offset);
-
-                for (size_t i = 1; i < point_set.size(); ++i)
-                {
-                    Eigen::Vector2d rel = point_set[i].head<2>() - lane_origin;
-                    const double along = rel.dot(forward);
-                    const double start_along = (start2d - lane_origin).dot(forward);
-                    if (along <= start_along + bias_start)
-                    {
-                        continue;
-                    }
-
-                    double ramp = std::min(1.0, std::max(0.0, (along - start_along - bias_start) / bias_full));
-                    double taper = 1.0;
-                    if (along > return_start)
-                    {
-                        const double taper_len = std::max(2.0, path_len - return_start);
-                        taper = std::max(0.0, 1.0 - (along - return_start) / taper_len);
-                    }
-
-                    const double offset = desired_offset * ramp * ramp * (3.0 - 2.0 * ramp) * taper;
-                    const double original_right = rel.dot(right_normal);
-                    const double target_right = std::max(original_right, offset);
-                    const double monotonic_right = std::max(last_right_offset, target_right);
-                    last_right_offset = monotonic_right;
-
-                    Eigen::Vector2d shifted = lane_origin + forward * along + right_normal * monotonic_right;
-                    point_set[i].x() = shifted.x();
-                    point_set[i].y() = shifted.y();
-                }
-
-                if (!start_end_derivatives.empty())
-                {
-                    const double start_speed =
-                        std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[0].head<2>().norm()));
-                    const double start_right_gain = current_right_offset < desired_offset * 0.8 ? 0.35 : 0.05;
-                    Eigen::Vector2d biased_start_dir = forward + start_right_gain * right_normal;
-                    if (biased_start_dir.norm() > 1e-3)
-                    {
-                        biased_start_dir.normalize();
-                        start_end_derivatives[0].x() = biased_start_dir.x() * start_speed;
-                        start_end_derivatives[0].y() = biased_start_dir.y() * start_speed;
-                    }
-
-                    if (!can_return_after_pass && start_end_derivatives.size() >= 2)
-                    {
-                        Eigen::Vector2d biased_end_dir = forward + 0.25 * right_normal;
-                        if (biased_end_dir.norm() > 1e-3)
-                        {
-                            const double end_speed = start_end_derivatives[1].head<2>().norm();
-                            biased_end_dir.normalize();
-                            start_end_derivatives[1].x() = biased_end_dir.x() * end_speed;
-                            start_end_derivatives[1].y() = biased_end_dir.y() * end_speed;
-                        }
-                    }
-                }
-
-                ROS_WARN("COLREGs HEAD_ON: applied early starboard bias to local initial trajectory, offset=%.2f m, points=%zu",
-                         desired_offset, point_set.size());
-                ROS_WARN("COLREGs HEAD_ON: holding starboard lane until along=%.2f m (obs_along=%.2f, path_len=%.2f)",
-                         return_start, obs_along, path_len);
-            }
-        }
+        applyHeadOnInitialBias(start_pt, start_vel, local_target_pt, point_set, start_end_derivatives);
 
         Eigen::MatrixXd ctrl_pts;
         UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
 
-        /* 3. 璋冪敤甯﹂伩纰颁唬浠风殑 A* */
+        /* 3. 调用带避碰代价的 A* */
         vector<vector<Eigen::Vector3d>> a_star_pathes;
         a_star_pathes = bspline_optimizer_rebound_->initControlPoints(ctrl_pts, true);
 
@@ -666,7 +694,8 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             }
             const double locked_along_to_ts = rel_pos.dot(lock_course);
             const double locked_lateral_to_ts = lock_course.x() * rel_pos.y() - lock_course.y() * rel_pos.x();
-            const bool passed_target = locked_along_to_ts < -safe_dcpa_;
+            const bool passed_target = locked_along_to_ts < safe_dcpa_ * 0.5 &&
+                                       std::abs(locked_lateral_to_ts) > safe_dcpa_ * 1.1;
             const bool clear_after_abeam =
                 lock_time > 5.0 &&
                 locked_along_to_ts < safe_dcpa_ * 0.5 &&
@@ -725,7 +754,7 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
 
         COLREGS_SCENARIO detected_scenario = NONE;
 
-        // 鍒ゅ畾閫昏緫
+        // 判定逻辑
         if (abs(rel_bearing_to_ts_deg) > 112.5 && v_os.norm() > v_ts.norm()) {
             detected_scenario = OVERTAKING;
         }
@@ -740,7 +769,7 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             }
         }
 
-        // 娑堟姈澶勭悊
+        // 消抖处理
         static int consistency_count = 0;
         static COLREGS_SCENARIO last_detected = NONE;
         if (detected_scenario == last_detected && detected_scenario != NONE) {

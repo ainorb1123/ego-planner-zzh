@@ -106,6 +106,15 @@ namespace ego_planner
         Eigen::Vector2d head_on_lock_course_{Eigen::Vector2d(1.0, 0.0)};
         Eigen::Vector2d head_on_lock_origin_{Eigen::Vector2d::Zero()};
 
+        void resetHeadOnManeuver();
+        void updateAStarHeadOnContext(const Eigen::Vector3d& start_pt,
+                                       const Eigen::Vector3d& start_vel);
+        void applyHeadOnInitialBias(const Eigen::Vector3d& start_pt,
+                                    const Eigen::Vector3d& start_vel,
+                                    const Eigen::Vector3d& local_target_pt,
+                                    std::vector<Eigen::Vector3d>& point_set,
+                                    std::vector<Eigen::Vector3d>& start_end_derivatives);
+
         // 鏇存柊杞ㄨ抗淇℃伅
         void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
 

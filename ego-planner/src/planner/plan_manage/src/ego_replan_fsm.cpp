@@ -1,4 +1,4 @@
-﻿
+
 #include <plan_manage/ego_replan_fsm.h>
 #include <boost/bind/bind.hpp>
 
@@ -24,7 +24,7 @@ namespace ego_planner
     have_target_ = false;
     have_odom_ = false;
 
-    // 璁㈤槄闅滅鐗╋紙浠栬埞锛変綅缃拰閫熷害淇℃伅
+    // 订阅障碍物（他船）位置和速度信息
     obs_overtake_sub_ = nh.subscribe<nav_msgs::Odometry>(
         "/obs_overtake/odom", 10,
         boost::bind(&EGOReplanFSM::dynamicObstacleCallback, this, boost::placeholders::_1, std::string("obs_overtake")));
@@ -417,8 +417,8 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     static int fsm_num = 0;
     fsm_num++;
 
-    // 2. 灞€闈俊鎭墦鍗伴€昏緫 (鍚堝苟鍒拌繖閲?
-    if (fsm_num == 100) // 绾?1绉?鎵撳嵃涓€娆?
+    // 2. 局面信息打印逻辑 (合并到这�?
+    if (fsm_num == 100) // �?1�?打印一�?
     {
       printFSMExecState();
       
@@ -627,9 +627,10 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
         return;
       }
       else if (planner_manager_->has_active_obstacle_ &&
-               planner_manager_->current_scenario_ != EGOPlannerManager::NONE)
+               planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON)
       {
-        static ros::Time last_colregs_replan_time(0);
+        was_in_head_on_maneuver_ = true;
+        static ros::Time last_head_on_replan_time(0);
         const double dcpa = planner_manager_->getLastDCPA();
         const double tcpa = planner_manager_->getLastTCPA();
         const double safe_dcpa = planner_manager_->getSafeDCPA();
@@ -650,33 +651,36 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
           course = to_goal.norm() > 1e-3 ? to_goal.normalized() : Eigen::Vector2d(1.0, 0.0);
         }
         double lateral_obs = course.x() * rel_obs.y() - course.y() * rel_obs.x();
-        bool already_maneuvering =
-            ((planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON ||
-              planner_manager_->current_scenario_ == EGOPlannerManager::CROSS_GIVE_WAY) &&
-             lateral_obs > 3.0) ||
-            (planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING &&
-             lateral_obs < -3.0);
-        bool urgent_colregs =
+        bool already_maneuvering = lateral_obs > 3.0;
+        bool urgent_head_on =
             planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON &&
             tcpa > 0.0 &&
             (tcpa < 8.0 || dcpa < safe_dcpa * 1.2);
 
         const bool locked_head_on = planner_manager_->hasHeadOnManeuverLock();
-        const double colregs_replan_interval = (urgent_colregs && !locked_head_on) ? 0.8 : 1.5;
-        const bool need_colregs_replan = !already_maneuvering || (urgent_colregs && !locked_head_on);
+        const double head_on_replan_interval = (urgent_head_on && !locked_head_on) ? 0.8 : 1.5;
+        const bool need_head_on_replan = !already_maneuvering || (urgent_head_on && !locked_head_on);
 
-        if (need_colregs_replan &&
-            (time_now - last_colregs_replan_time).toSec() > colregs_replan_interval)
+        if (need_head_on_replan &&
+            (time_now - last_head_on_replan_time).toSec() > head_on_replan_interval)
         {
-          if (urgent_colregs && !locked_head_on)
+          if (urgent_head_on && !locked_head_on)
           {
             std_msgs::UInt8 stop_cmd;
             stop_cmd.data = 1;
             stop_pub.publish(stop_cmd);
           }
-          last_colregs_replan_time = time_now;
-          changeFSMExecState(REPLAN_TRAJ, "COLREGs");
+          last_head_on_replan_time = time_now;
+          changeFSMExecState(REPLAN_TRAJ, "HEAD_ON");
         }
+        return;
+      }
+      else if (was_in_head_on_maneuver_)
+      {
+        was_in_head_on_maneuver_ = false;
+        force_head_on_poly_replan_once_ = true;
+        ROS_WARN("HEAD_ON cleared: forcing one polynomial replan back toward global target");
+        changeFSMExecState(REPLAN_TRAJ, "HEAD_ON_CLEAR");
         return;
       }
       else if ((info->start_pos_ - pos).norm() < replan_thresh_)
@@ -760,7 +764,10 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     //first step : calculate the yaw error
 
 
-    bool success = callReboundReplan(false, false);
+    const bool force_poly_init = force_head_on_poly_replan_once_;
+    force_head_on_poly_replan_once_ = false;
+
+    bool success = callReboundReplan(force_poly_init, false);
 
     if (!success)
     {
@@ -889,6 +896,80 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     return true;
   }
 
+  bool EGOReplanFSM::adjustLocalTargetForHeadOn(double stop_dist)
+  {
+    const bool raw_target_near_final = (end_pt_ - local_target_pt_).norm() < stop_dist;
+    if (!planner_manager_->has_active_obstacle_ ||
+        planner_manager_->current_scenario_ != EGOPlannerManager::HEAD_ON ||
+        raw_target_near_final)
+    {
+      return false;
+    }
+
+    Eigen::Vector2d start2d = start_pt_.head<2>();
+    Eigen::Vector2d goal_vec = (end_pt_ - start_pt_).head<2>();
+    double goal_dist = goal_vec.norm();
+    if (goal_dist <= 1e-3)
+      return false;
+
+    Eigen::Vector2d goal_dir = goal_vec / goal_dist;
+    if (planner_manager_->hasHeadOnManeuverLock() &&
+        planner_manager_->getHeadOnLockCourse().norm() > 0.05)
+    {
+      goal_dir = planner_manager_->getHeadOnLockCourse().normalized();
+    }
+
+    Eigen::Vector2d target_vec = (local_target_pt_ - start_pt_).head<2>();
+    double target_along = target_vec.dot(goal_dir);
+    double target_lateral = goal_dir.x() * target_vec.y() - goal_dir.y() * target_vec.x();
+    double lookahead = std::min(planning_horizen_, goal_dist);
+    double min_forward = std::min(lookahead * 0.45, goal_dist);
+
+    Eigen::Vector2d obs_rel = (planner_manager_->ts_pos_ - start_pt_).head<2>();
+    double obs_along = obs_rel.dot(goal_dir);
+    double obs_lateral = goal_dir.x() * obs_rel.y() - goal_dir.y() * obs_rel.x();
+    const double safe_dcpa = planner_manager_->getSafeDCPA();
+
+    bool target_points_to_obstacle =
+        obs_along > 0.0 &&
+        std::abs(obs_lateral) < safe_dcpa * 1.4 &&
+        target_along > obs_along - safe_dcpa * 1.5 &&
+        target_along < obs_along + safe_dcpa * 2.5 &&
+        std::abs(target_lateral) < safe_dcpa * 1.2;
+    bool locked_head_on_target_leaves_lane =
+        planner_manager_->hasHeadOnManeuverLock() &&
+        obs_along > safe_dcpa * 1.5 &&
+        target_lateral > -safe_dcpa * 0.8;
+
+    if (target_along >= min_forward &&
+        target_vec.dot(goal_vec) > 0.0 &&
+        !target_points_to_obstacle &&
+        !locked_head_on_target_leaves_lane)
+    {
+      return false;
+    }
+
+    Eigen::Vector2d corrected = start2d + goal_dir * lookahead;
+    if (obs_along > 0.0 && obs_along < lookahead + safe_dcpa * 2.0)
+    {
+      Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
+      corrected += right_normal * std::max(safe_dcpa * 1.1, 4.5);
+    }
+    else if (planner_manager_->hasHeadOnManeuverLock())
+    {
+      Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
+      corrected += right_normal * std::max(safe_dcpa * 1.0, 4.0);
+    }
+
+    ROS_WARN_THROTTLE(0.5,
+                      "Local target corrected toward goal: old=(%.2f, %.2f), new=(%.2f, %.2f), obstacle_risk=%d",
+                      local_target_pt_.x(), local_target_pt_.y(),
+                      corrected.x(), corrected.y(),
+                      target_points_to_obstacle ? 1 : 0);
+    local_target_pt_.x() = corrected.x();
+    local_target_pt_.y() = corrected.y();
+    return true;
+  }
   void EGOReplanFSM::getLocalTarget()
   {
     double t;
@@ -927,85 +1008,9 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       local_target_pt_ = end_pt_;
     }
 
-    bool local_target_corrected = false;
-    Eigen::Vector2d corrected_target_dir(0.0, 0.0);
-    if (planner_manager_->has_active_obstacle_ &&
-        planner_manager_->current_scenario_ != EGOPlannerManager::NONE)
-    {
-      Eigen::Vector2d start2d = start_pt_.head<2>();
-      Eigen::Vector2d goal_vec = (end_pt_ - start_pt_).head<2>();
-      double goal_dist = goal_vec.norm();
-      if (goal_dist > 1e-3)
-      {
-        Eigen::Vector2d goal_dir = goal_vec / goal_dist;
-        if (planner_manager_->hasHeadOnManeuverLock() &&
-            planner_manager_->getHeadOnLockCourse().norm() > 0.05)
-        {
-          goal_dir = planner_manager_->getHeadOnLockCourse().normalized();
-        }
-        Eigen::Vector2d target_vec = (local_target_pt_ - start_pt_).head<2>();
-        double target_along = target_vec.dot(goal_dir);
-        double target_lateral = goal_dir.x() * target_vec.y() - goal_dir.y() * target_vec.x();
-        double lookahead = std::min(planning_horizen_, goal_dist);
-        double min_forward = std::min(lookahead * 0.45, goal_dist);
-
-        Eigen::Vector2d obs_rel = (planner_manager_->ts_pos_ - start_pt_).head<2>();
-        double obs_along = obs_rel.dot(goal_dir);
-        double obs_lateral = goal_dir.x() * obs_rel.y() - goal_dir.y() * obs_rel.x();
-        bool target_points_to_obstacle =
-            obs_along > 0.0 &&
-            std::abs(obs_lateral) < planner_manager_->getSafeDCPA() * 1.4 &&
-            target_along > obs_along - planner_manager_->getSafeDCPA() * 1.5 &&
-            target_along < obs_along + planner_manager_->getSafeDCPA() * 2.5 &&
-            std::abs(target_lateral) < planner_manager_->getSafeDCPA() * 1.2;
-        bool locked_head_on_target_leaves_lane =
-            planner_manager_->hasHeadOnManeuverLock() &&
-            target_lateral > -planner_manager_->getSafeDCPA() * 0.8;
-
-        if (target_along < min_forward ||
-            target_vec.dot(goal_vec) <= 0.0 ||
-            target_points_to_obstacle ||
-            locked_head_on_target_leaves_lane)
-        {
-          Eigen::Vector2d corrected = start2d + goal_dir * lookahead;
-
-          if ((planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON ||
-               planner_manager_->current_scenario_ == EGOPlannerManager::CROSS_GIVE_WAY) &&
-              obs_along > 0.0 && obs_along < lookahead + planner_manager_->getSafeDCPA() * 2.0)
-          {
-            Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
-            double right_offset = std::max(planner_manager_->getSafeDCPA() * 1.1, 4.5);
-            corrected += right_normal * right_offset;
-          }
-          else if (planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING &&
-                   obs_along > 0.0 && obs_along < lookahead + planner_manager_->getSafeDCPA() * 2.0)
-          {
-            Eigen::Vector2d left_normal(-goal_dir.y(), goal_dir.x());
-            double left_offset = std::max(planner_manager_->getSafeDCPA() * 1.1, 4.5);
-            corrected += left_normal * left_offset;
-          }
-          else if (planner_manager_->hasHeadOnManeuverLock())
-          {
-            Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
-            double right_offset = std::max(planner_manager_->getSafeDCPA() * 1.0, 4.0);
-            corrected += right_normal * right_offset;
-          }
-
-          ROS_WARN_THROTTLE(0.5,
-                            "Local target corrected toward goal: old=(%.2f, %.2f), new=(%.2f, %.2f), obstacle_risk=%d",
-                            local_target_pt_.x(), local_target_pt_.y(),
-                            corrected.x(), corrected.y(),
-                            target_points_to_obstacle ? 1 : 0);
-          local_target_pt_.x() = corrected.x();
-          local_target_pt_.y() = corrected.y();
-          corrected_target_dir = (local_target_pt_ - start_pt_).head<2>();
-          local_target_corrected = corrected_target_dir.norm() > 1e-3;
-        }
-      }
-    }
-
     const double stop_dist = (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) /
                              (2 * planner_manager_->pp_.max_acc_);
+    const bool local_target_corrected = adjustLocalTargetForHeadOn(stop_dist);
     const bool near_final_target = (end_pt_ - local_target_pt_).norm() < stop_dist;
     if (near_final_target)
     {
@@ -1021,11 +1026,15 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
 
     if (local_target_corrected && !near_final_target)
     {
-      corrected_target_dir.normalize();
-      const double target_speed = std::min(planner_manager_->pp_.max_vel_,
-                                           std::max(0.5, odom_vel_.head<2>().norm()));
-      local_target_vel_.x() = corrected_target_dir.x() * target_speed;
-      local_target_vel_.y() = corrected_target_dir.y() * target_speed;
+      Eigen::Vector2d corrected_target_dir = (local_target_pt_ - start_pt_).head<2>();
+      if (corrected_target_dir.norm() > 1e-3)
+      {
+        corrected_target_dir.normalize();
+        const double target_speed = std::min(planner_manager_->pp_.max_vel_,
+                                             std::max(0.5, odom_vel_.head<2>().norm()));
+        local_target_vel_.x() = corrected_target_dir.x() * target_speed;
+        local_target_vel_.y() = corrected_target_dir.y() * target_speed;
+      }
     }
   }
 
