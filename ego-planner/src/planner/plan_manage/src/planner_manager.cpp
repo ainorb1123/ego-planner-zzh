@@ -52,7 +52,15 @@ namespace ego_planner
         if (current_scenario_ != HEAD_ON || point_set.size() < 4)
             return;
 
-        Eigen::Vector2d forward = head_on_maneuver_lock_ ? head_on_lock_course_ : start_vel.head<2>();
+        Eigen::Vector2d forward;
+        if (head_on_maneuver_lock_)
+        {
+            forward = head_on_lock_course_;
+        }
+        else
+        {
+            forward = Eigen::Vector2d(start_vel.x(), start_vel.y());
+        }
         if (forward.norm() < 0.1)
         {
             forward = (local_target_pt - start_pt).head<2>();
@@ -156,10 +164,25 @@ namespace ego_planner
         if (current_scenario_ != OVERTAKING || point_set.size() < 4)
             return;
 
-        Eigen::Vector2d forward = overtaking_maneuver_lock_ ? overtaking_lock_course_ : start_vel.head<2>();
+        Eigen::Vector2d forward;
+        if (overtaking_maneuver_lock_)
+        {
+            forward = overtaking_lock_course_;
+        }
+        else
+        {
+            forward = Eigen::Vector2d(start_vel.x(), start_vel.y());
+        }
         if (forward.norm() < 0.1)
         {
-            forward = ts_vel_.head<2>().norm() > 0.05 ? ts_vel_.head<2>() : (local_target_pt - start_pt).head<2>();
+            if (ts_vel_.head<2>().norm() > 0.05)
+            {
+                forward = Eigen::Vector2d(ts_vel_.x(), ts_vel_.y());
+            }
+            else
+            {
+                forward = (local_target_pt - start_pt).head<2>();
+            }
         }
         if (forward.norm() <= 1e-3)
             return;
