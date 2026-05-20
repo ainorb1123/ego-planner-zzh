@@ -675,6 +675,45 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
         }
         return;
       }
+      else if (planner_manager_->has_active_obstacle_ &&
+               planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING)
+      {
+        was_in_overtaking_maneuver_ = true;
+        static ros::Time last_overtaking_replan_time(0);
+        Eigen::Vector2d rel_obs = (planner_manager_->ts_pos_ - odom_pos_).head<2>();
+        Eigen::Vector2d course;
+        if (planner_manager_->hasOvertakingManeuverLock() &&
+            planner_manager_->getOvertakingLockCourse().norm() > 0.05)
+        {
+          course = planner_manager_->getOvertakingLockCourse().normalized();
+        }
+        else if (odom_vel_.head<2>().norm() > 0.05)
+        {
+          course = odom_vel_.head<2>().normalized();
+        }
+        else
+        {
+          Eigen::Vector2d to_goal = (end_pt_ - odom_pos_).head<2>();
+          course = to_goal.norm() > 1e-3 ? to_goal.normalized() : Eigen::Vector2d(1.0, 0.0);
+        }
+        double lateral_obs = course.x() * rel_obs.y() - course.y() * rel_obs.x();
+        bool already_maneuvering = lateral_obs < -3.0;
+        if (!already_maneuvering &&
+            (time_now - last_overtaking_replan_time).toSec() > 1.5)
+        {
+          last_overtaking_replan_time = time_now;
+          changeFSMExecState(REPLAN_TRAJ, "OVERTAKING");
+        }
+        return;
+      }
+      else if (was_in_overtaking_maneuver_)
+      {
+        was_in_overtaking_maneuver_ = false;
+        force_overtaking_poly_replan_once_ = true;
+        ROS_WARN("OVERTAKING cleared: forcing one polynomial replan back toward global target");
+        changeFSMExecState(REPLAN_TRAJ, "OVERTAKING_CLEAR");
+        return;
+      }
       else if (was_in_head_on_maneuver_)
       {
         was_in_head_on_maneuver_ = false;
@@ -764,8 +803,9 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     //first step : calculate the yaw error
 
 
-    const bool force_poly_init = force_head_on_poly_replan_once_;
+    const bool force_poly_init = force_head_on_poly_replan_once_ || force_overtaking_poly_replan_once_;
     force_head_on_poly_replan_once_ = false;
+    force_overtaking_poly_replan_once_ = false;
 
     bool success = callReboundReplan(force_poly_init, false);
 
@@ -970,6 +1010,80 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     local_target_pt_.y() = corrected.y();
     return true;
   }
+  bool EGOReplanFSM::adjustLocalTargetForOvertaking(double stop_dist)
+  {
+    const bool raw_target_near_final = (end_pt_ - local_target_pt_).norm() < stop_dist;
+    if (!planner_manager_->has_active_obstacle_ ||
+        planner_manager_->current_scenario_ != EGOPlannerManager::OVERTAKING ||
+        raw_target_near_final)
+    {
+      return false;
+    }
+
+    Eigen::Vector2d start2d = start_pt_.head<2>();
+    Eigen::Vector2d goal_vec = (end_pt_ - start_pt_).head<2>();
+    double goal_dist = goal_vec.norm();
+    if (goal_dist <= 1e-3)
+      return false;
+
+    Eigen::Vector2d goal_dir = goal_vec / goal_dist;
+    if (planner_manager_->hasOvertakingManeuverLock() &&
+        planner_manager_->getOvertakingLockCourse().norm() > 0.05)
+    {
+      goal_dir = planner_manager_->getOvertakingLockCourse().normalized();
+    }
+
+    Eigen::Vector2d target_vec = (local_target_pt_ - start_pt_).head<2>();
+    double target_along = target_vec.dot(goal_dir);
+    double target_lateral = goal_dir.x() * target_vec.y() - goal_dir.y() * target_vec.x();
+    double lookahead = std::min(planning_horizen_, goal_dist);
+    double min_forward = std::min(lookahead * 0.45, goal_dist);
+
+    Eigen::Vector2d obs_rel = (planner_manager_->ts_pos_ - start_pt_).head<2>();
+    double obs_along = obs_rel.dot(goal_dir);
+    double obs_lateral = goal_dir.x() * obs_rel.y() - goal_dir.y() * obs_rel.x();
+    const double safe_dcpa = planner_manager_->getSafeDCPA();
+
+    bool target_points_to_obstacle =
+        obs_along > -safe_dcpa &&
+        std::abs(obs_lateral) < safe_dcpa * 1.4 &&
+        target_along > obs_along - safe_dcpa * 1.5 &&
+        target_along < obs_along + safe_dcpa * 3.0 &&
+        std::abs(target_lateral) < safe_dcpa * 1.2;
+    bool locked_overtaking_target_leaves_lane =
+        planner_manager_->hasOvertakingManeuverLock() &&
+        obs_along > -safe_dcpa * 2.0 &&
+        target_lateral < safe_dcpa * 0.8;
+
+    if (target_along >= min_forward &&
+        target_vec.dot(goal_vec) > 0.0 &&
+        !target_points_to_obstacle &&
+        !locked_overtaking_target_leaves_lane)
+    {
+      return false;
+    }
+
+    Eigen::Vector2d left_normal(-goal_dir.y(), goal_dir.x());
+    const double lane_offset = std::max(safe_dcpa * 1.1, 5.5);
+    Eigen::Vector2d lane_origin = start2d;
+    double current_along = 0.0;
+    if (planner_manager_->hasOvertakingManeuverLock())
+    {
+      lane_origin = planner_manager_->getOvertakingLockOrigin();
+      current_along = (start2d - lane_origin).dot(goal_dir);
+    }
+
+    Eigen::Vector2d corrected = lane_origin + goal_dir * (current_along + lookahead) + left_normal * lane_offset;
+
+    ROS_WARN_THROTTLE(0.5,
+                      "Overtaking local target corrected: old=(%.2f, %.2f), new=(%.2f, %.2f), obstacle_risk=%d",
+                      local_target_pt_.x(), local_target_pt_.y(),
+                      corrected.x(), corrected.y(),
+                      target_points_to_obstacle ? 1 : 0);
+    local_target_pt_.x() = corrected.x();
+    local_target_pt_.y() = corrected.y();
+    return true;
+  }
   void EGOReplanFSM::getLocalTarget()
   {
     double t;
@@ -1010,7 +1124,8 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
 
     const double stop_dist = (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) /
                              (2 * planner_manager_->pp_.max_acc_);
-    const bool local_target_corrected = adjustLocalTargetForHeadOn(stop_dist);
+    const bool local_target_corrected = adjustLocalTargetForHeadOn(stop_dist) ||
+                                       adjustLocalTargetForOvertaking(stop_dist);
     const bool near_final_target = (end_pt_ - local_target_pt_).norm() < stop_dist;
     if (near_final_target)
     {
