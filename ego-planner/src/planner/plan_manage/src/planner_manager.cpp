@@ -699,16 +699,14 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             }
             const double locked_along_to_ts = rel_pos.dot(lock_course);
             const double locked_lateral_to_ts = lock_course.x() * rel_pos.y() - lock_course.y() * rel_pos.x();
-            const bool passed_target = locked_along_to_ts < safe_dcpa_ * 0.5 &&
-                                       std::abs(locked_lateral_to_ts) > safe_dcpa_ * 1.1;
-            const bool clear_after_abeam =
-                lock_time > 5.0 &&
-                locked_along_to_ts < safe_dcpa_ * 0.5 &&
-                std::abs(locked_lateral_to_ts) > safe_dcpa_ * 1.5 &&
-                tcpa < -1.0 &&
-                dcpa > safe_dcpa_ * 1.5;
+            const bool obstacle_not_ahead = locked_along_to_ts < safe_dcpa_ * 0.5;
+            const bool has_lateral_clearance = std::abs(locked_lateral_to_ts) > safe_dcpa_ * 0.9;
+            const bool cpa_opening_or_safe = tcpa < -0.2 || dcpa > safe_dcpa_ * 1.2;
+            const bool passed_target = obstacle_not_ahead && has_lateral_clearance;
+            const bool clear_after_abeam = lock_time > 2.0 && obstacle_not_ahead && cpa_opening_or_safe;
+            const bool clear_by_timeout = lock_time > 18.0 && cpa_opening_or_safe;
 
-            if (same_obstacle && !passed_target && !clear_after_abeam)
+            if (same_obstacle && !passed_target && !clear_after_abeam && !clear_by_timeout)
             {
                 current_scenario_ = HEAD_ON;
                 ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 1 | locked starboard maneuver | lateral: %.2f | along: %.2f | DCPA: %.2f | TCPA: %.2f",
@@ -716,9 +714,13 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
                 return;
             }
 
+            ROS_WARN("[COLREGs] HEAD_ON lock released | lateral: %.2f | along: %.2f | DCPA: %.2f | TCPA: %.2f | lock_time: %.2f",
+                     locked_lateral_to_ts, locked_along_to_ts, dcpa, tcpa, lock_time);
             head_on_maneuver_lock_ = false;
             head_on_lock_obstacle_ = "none";
             head_on_lock_origin_ = Eigen::Vector2d::Zero();
+            current_scenario_ = NONE;
+            return;
         }
 
         if (dist > colregs_dist_threshold_ || tcpa <= 0 || dcpa > safe_dcpa_) {
@@ -793,11 +795,16 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             head_on_maneuver_lock_ = true;
             head_on_lock_obstacle_ = active_obstacle_name_;
             head_on_lock_start_ = ros::Time::now();
-            head_on_lock_course_ = os_course;
+            Eigen::Vector2d ts_course = v_ts.norm() > 0.05 ? v_ts.normalized() : -os_course;
+            head_on_lock_course_ = -ts_course;
+            if (head_on_lock_course_.dot(os_course) < 0.0)
+            {
+                head_on_lock_course_ = -head_on_lock_course_;
+            }
             head_on_lock_origin_ = os_pos.head<2>();
             if (head_on_lock_course_.norm() < 1e-3)
             {
-                head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
+                head_on_lock_course_ = os_course.norm() > 1e-3 ? os_course : Eigen::Vector2d(1.0, 0.0);
             }
             else
             {
