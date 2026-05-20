@@ -541,7 +541,17 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
               yaw_error = yaw_error - yaw_error/abs(yaw_error)*2*PI;
           }
           cout<<"yaw error : "<<yaw_error<<endl;
-          if(abs(yaw_error)>PI/2.0)
+          const bool in_colregs_maneuver = planner_manager_->has_active_obstacle_ &&
+              (planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON ||
+               planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING);
+          if (in_colregs_maneuver && dir == NEGATIVE)
+          {
+              dir = POSITIVE;
+              std_msgs::UInt8 dir_new;
+              dir_new.data = dir;
+              dir_pub.publish(dir_new);
+          }
+          if(abs(yaw_error)>PI/2.0 && !in_colregs_maneuver)
           {
               if(yaw>0)
               {
@@ -782,7 +792,18 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     yaw_start = atan2((end_pt_-odom_pos_)(1),(end_pt_-odom_pos_)(0));
     yaw_error = yaw_start-yaw;
 
-    if(is_target_receive)
+    const bool in_colregs_maneuver = planner_manager_->has_active_obstacle_ &&
+        (planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON ||
+         planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING);
+    if (in_colregs_maneuver && dir == NEGATIVE)
+    {
+        dir = POSITIVE;
+        std_msgs::UInt8 dir_new;
+        dir_new.data = dir;
+        dir_pub.publish(dir_new);
+    }
+
+    if(is_target_receive && !in_colregs_maneuver)
     {
         if(abs(yaw_error)>PI)
         {
