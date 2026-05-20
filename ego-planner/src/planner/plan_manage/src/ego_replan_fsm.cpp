@@ -616,6 +616,14 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       /* && (end_pt_ - pos).norm() < 0.5 */
       if (t_cur > info->duration_ - 1e-2)
       {
+        if (planner_manager_->has_active_obstacle_ &&
+            (planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON ||
+             planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING))
+        {
+          changeFSMExecState(REPLAN_TRAJ, "COLREGsContinue");
+          return;
+        }
+
         have_target_ = false;
 
         changeFSMExecState(WAIT_TARGET, "FSM");
@@ -697,9 +705,11 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
           course = to_goal.norm() > 1e-3 ? to_goal.normalized() : Eigen::Vector2d(1.0, 0.0);
         }
         double lateral_obs = course.x() * rel_obs.y() - course.y() * rel_obs.x();
+        double along_obs = rel_obs.dot(course);
         bool already_maneuvering = lateral_obs < -3.0;
-        if (!already_maneuvering &&
-            (time_now - last_overtaking_replan_time).toSec() > 1.5)
+        bool need_overtaking_replan = !already_maneuvering || along_obs > -planner_manager_->getSafeDCPA() * 2.0;
+        if (need_overtaking_replan &&
+            (time_now - last_overtaking_replan_time).toSec() > 1.0)
         {
           last_overtaking_replan_time = time_now;
           changeFSMExecState(REPLAN_TRAJ, "OVERTAKING");
