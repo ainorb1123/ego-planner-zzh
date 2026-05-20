@@ -85,6 +85,7 @@ namespace ego_planner
         double getSafeDCPA() const { return safe_dcpa_; }
         bool hasHeadOnManeuverLock() const { return head_on_maneuver_lock_; }
         Eigen::Vector2d getHeadOnLockCourse() const { return head_on_lock_course_; }
+        Eigen::Vector2d getHeadOnLockOrigin() const { return head_on_lock_origin_; }
 
     private:
         /* --- 鍐呴儴绉佹湁绠楁硶涓庢ā鍧?--- */

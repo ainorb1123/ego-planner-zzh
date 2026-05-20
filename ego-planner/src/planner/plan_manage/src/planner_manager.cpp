@@ -92,13 +92,18 @@ namespace ego_planner
 
             const double offset = desired_offset * ramp * ramp * (3.0 - 2.0 * ramp) * taper;
             const double original_right = rel.dot(right_normal);
-            const double target_right = std::max(original_right, offset);
-            const double monotonic_right = hold_until_local_target
-                                               ? std::max(last_right_offset, target_right)
-                                               : target_right;
-            last_right_offset = monotonic_right;
+            double target_right = std::max(offset, std::min(original_right, desired_offset));
+            if (original_right > desired_offset)
+            {
+                target_right = std::max(desired_offset, original_right - desired_offset * 0.25 * ramp);
+            }
+            const bool still_ramping_to_lane = current_right_offset < desired_offset * 0.95;
+            const double lane_right = (hold_until_local_target && still_ramping_to_lane)
+                                          ? std::max(last_right_offset, target_right)
+                                          : target_right;
+            last_right_offset = lane_right;
 
-            Eigen::Vector2d shifted = lane_origin + forward * along + right_normal * monotonic_right;
+            Eigen::Vector2d shifted = lane_origin + forward * along + right_normal * lane_right;
             point_set[i].x() = shifted.x();
             point_set[i].y() = shifted.y();
         }

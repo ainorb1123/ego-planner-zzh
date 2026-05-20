@@ -949,17 +949,17 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       return false;
     }
 
-    Eigen::Vector2d corrected = start2d + goal_dir * lookahead;
-    if (obs_along > 0.0 && obs_along < lookahead + safe_dcpa * 2.0)
+    Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
+    const double lane_offset = std::max(safe_dcpa * 1.1, 5.5);
+    Eigen::Vector2d lane_origin = start2d;
+    double current_along = 0.0;
+    if (planner_manager_->hasHeadOnManeuverLock())
     {
-      Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
-      corrected += right_normal * std::max(safe_dcpa * 1.1, 4.5);
+      lane_origin = planner_manager_->getHeadOnLockOrigin();
+      current_along = (start2d - lane_origin).dot(goal_dir);
     }
-    else if (planner_manager_->hasHeadOnManeuverLock())
-    {
-      Eigen::Vector2d right_normal(goal_dir.y(), -goal_dir.x());
-      corrected += right_normal * std::max(safe_dcpa * 1.0, 4.0);
-    }
+
+    Eigen::Vector2d corrected = lane_origin + goal_dir * (current_along + lookahead) + right_normal * lane_offset;
 
     ROS_WARN_THROTTLE(0.5,
                       "Local target corrected toward goal: old=(%.2f, %.2f), new=(%.2f, %.2f), obstacle_risk=%d",
