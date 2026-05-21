@@ -83,7 +83,7 @@ namespace ego_planner
     enum DIRECTION {POSITIVE=0,NEGATIVE=1};
     DIRECTION dir;
 
-    double roll,pitch,yaw,yaw_start,yaw_error_threshold,yaw_error;
+    double roll,pitch,yaw,raw_yaw,yaw_start,yaw_error_threshold,yaw_error;
     Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_; // odometry state
     Eigen::Quaterniond odom_orient_;
 
@@ -113,6 +113,8 @@ namespace ego_planner
     /* return value: std::pair< Times of the same state be continuously called, current continuously called state > */
     void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
     void changeDirection();
+    void setDirection(DIRECTION new_dir);
+    void syncDirectionWithTrajectoryYaw(double traj_yaw);
     void checkYawError();
     double calculateYawError(double yaw_cur,double yaw_target);
     std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> timesOfConsecutiveStateCalls();

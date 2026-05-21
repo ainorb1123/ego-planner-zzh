@@ -303,7 +303,8 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     odom_orient_.z() = msg->pose.pose.orientation.z;
 
     tf::quaternionMsgToTF(msg->pose.pose.orientation,quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+    tf::Matrix3x3(quat).getRPY(roll, pitch, raw_yaw);
+    yaw = raw_yaw;
 
     if(dir==NEGATIVE)
     {
@@ -380,14 +381,37 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
   void EGOReplanFSM::changeDirection() {
       if(dir == POSITIVE)
       {
-          dir = NEGATIVE;
+          setDirection(NEGATIVE);
       }else
       {
-          dir = POSITIVE;
+          setDirection(POSITIVE);
       }
+  }
+
+  void EGOReplanFSM::setDirection(DIRECTION new_dir) {
+      dir = new_dir;
       std_msgs::UInt8 dir_new;
       dir_new.data = dir;
       dir_pub.publish(dir_new);
+  }
+
+  void EGOReplanFSM::syncDirectionWithTrajectoryYaw(double traj_yaw) {
+      double raw_error = calculateYawError(raw_yaw, traj_yaw);
+      DIRECTION desired_dir = std::abs(raw_error) > PI / 2.0 ? NEGATIVE : POSITIVE;
+      setDirection(desired_dir);
+
+      yaw = raw_yaw;
+      if (dir == NEGATIVE)
+      {
+          if(yaw>0)
+          {
+              yaw -= PI;
+          }else if(yaw<0)
+          {
+              yaw += PI;
+          }
+      }
+      yaw_error = calculateYawError(yaw, traj_yaw);
   }
 
   std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> EGOReplanFSM::timesOfConsecutiveStateCalls()
@@ -800,7 +824,6 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
             changeDirection();
             //yaw_error = - yaw_error/abs(yaw_error)*(PI-abs(yaw_error));
             yaw_error = yaw_start - yaw;
-            start_vel_ <<-start_vel_(0),-start_vel_(1),0;
             start_acc_ <<-start_acc_(0),-start_acc_(1),0;
             //callEmergencyStop(odom_pos_);
             std_msgs::UInt8 stop_cmd;
