@@ -557,28 +557,9 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
           Eigen::Vector3d vel_start = planner_manager_->local_data_.velocity_traj_.evaluateDeBoor(0.1);
           yaw_start = atan2(vel_start(1),vel_start(0));
           cout<<"yaw start : "<<yaw_start<<endl;
-          yaw_error = yaw_start-yaw;
+          syncDirectionWithTrajectoryYaw(yaw_start);
 
-          //first step : calculate the yaw error
-          if(abs(yaw_error)>PI)
-          {
-              yaw_error = yaw_error - yaw_error/abs(yaw_error)*2*PI;
-          }
           cout<<"yaw error : "<<yaw_error<<endl;
-          if(abs(yaw_error)>PI/2.0)
-          {
-              if(yaw>0)
-              {
-                  yaw -= PI;
-              }else if(yaw<0)
-              {
-                  yaw += PI;
-              }
-              changeDirection();
-              //yaw_error = - yaw_error/abs(yaw_error)*(PI-abs(yaw_error));
-              yaw_error = yaw_start - yaw;
-
-          }
           if(abs(yaw_error)>yaw_error_max)
           {
               cmd_vel.linear.x = 0;
@@ -609,7 +590,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       {
           Eigen::Vector3d vel_start = planner_manager_->local_data_.velocity_traj_.evaluateDeBoor(0.1);
           yaw_start = atan2(vel_start(1),vel_start(0));
-          yaw_error = yaw_start-yaw;
+          syncDirectionWithTrajectoryYaw(yaw_start);
 
           auto info = &planner_manager_->local_data_;
           info->start_time_ = ros::Time::now();
@@ -804,26 +785,13 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     start_acc_.setZero();
 
     yaw_start = atan2((end_pt_-odom_pos_)(1),(end_pt_-odom_pos_)(0));
-    yaw_error = yaw_start-yaw;
+    yaw_error = calculateYawError(yaw, yaw_start);
 
     if(is_target_receive)
     {
-        if(abs(yaw_error)>PI)
+        syncDirectionWithTrajectoryYaw(yaw_start);
+        if(abs(yaw_error)>yaw_error_max)
         {
-            yaw_error = yaw_error - yaw_error/abs(yaw_error)*2*PI;
-        }
-        if(abs(yaw_error)>PI/2.0)
-        {
-            if(yaw>0)
-            {
-                yaw -= PI;
-            }else if(yaw<0)
-            {
-                yaw += PI;
-            }
-            changeDirection();
-            //yaw_error = - yaw_error/abs(yaw_error)*(PI-abs(yaw_error));
-            yaw_error = yaw_start - yaw;
             start_acc_ <<-start_acc_(0),-start_acc_(1),0;
             //callEmergencyStop(odom_pos_);
             std_msgs::UInt8 stop_cmd;

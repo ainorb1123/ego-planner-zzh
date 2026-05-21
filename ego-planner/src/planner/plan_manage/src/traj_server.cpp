@@ -14,6 +14,7 @@
 #include "visualization_msgs/Marker.h"
 #include <ros/ros.h>
 #include <algorithm>
+#include <cmath>
 #include "time.h"
 
 #define PI 3.1415926
@@ -40,7 +41,7 @@ Eigen::Vector3d odom_pos_,odom_vel_;
 Eigen::Quaterniond odom_orient_;
 
 MPC_controller mpc_controller;
-double roll,pitch,yaw;
+double roll,pitch,yaw,raw_yaw;
 geometry_msgs::PoseStamped pose_cur;
 tf::Quaternion quat;
 std_msgs::UInt8 is_adjust_pose;
@@ -52,6 +53,42 @@ enum DIRECTION {POSITIVE=0,NEGATIVE=1};
 double t_step;
 
 std_msgs::UInt8 stop_command;
+ros::Time last_traj_direction_sync_;
+
+double normalizeAngle(double angle)
+{
+    while (angle > PI)
+        angle -= 2 * PI;
+    while (angle < -PI)
+        angle += 2 * PI;
+    return angle;
+}
+
+void updateTrackingYawFromRaw()
+{
+    if (dir.data == NEGATIVE)
+    {
+        yaw = raw_yaw > 0 ? raw_yaw - PI : raw_yaw + PI;
+    }
+    else
+    {
+        yaw = raw_yaw;
+    }
+}
+
+void syncDirectionWithTrajectory(UniformBspline& pos_traj)
+{
+    Eigen::Vector3d start_vel = pos_traj.getDerivative().evaluateDeBoor(0.1);
+    start_vel(2) = 0;
+    if (start_vel.head<2>().norm() < 1e-3)
+        return;
+
+    const double traj_yaw = atan2(start_vel.y(), start_vel.x());
+    const double raw_error = normalizeAngle(traj_yaw - raw_yaw);
+    dir.data = std::abs(raw_error) > PI / 2.0 ? NEGATIVE : POSITIVE;
+    last_traj_direction_sync_ = ros::Time::now();
+    updateTrackingYawFromRaw();
+}
 
 ////time record
 clock_t start_clock,end_clock;
@@ -78,6 +115,7 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
 
   UniformBspline pos_traj(pos_pts, msg->order, 0.1);
   pos_traj.setKnot(knots);
+  syncDirectionWithTrajectory(pos_traj);
 
 
   start_time_ = msg->start_time;
@@ -107,7 +145,8 @@ void poseCallback(geometry_msgs::PoseStampedConstPtr msg)
 {
     pose_cur = *msg;
     tf::quaternionMsgToTF(msg->pose.orientation, quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);//进行转换
+    tf::Matrix3x3(quat).getRPY(roll, pitch, raw_yaw);//进行转换
+    updateTrackingYawFromRaw();
 }
 
 void adjust_yaw_Callback(std_msgs::UInt8ConstPtr msg)
@@ -117,7 +156,14 @@ void adjust_yaw_Callback(std_msgs::UInt8ConstPtr msg)
 
 void dirCallback(const std_msgs::UInt8ConstPtr& msg)
 {
+    if (!last_traj_direction_sync_.isZero() &&
+        (ros::Time::now() - last_traj_direction_sync_).toSec() < 0.2 &&
+        msg->data != dir.data)
+    {
+        return;
+    }
     dir = *msg;
+    updateTrackingYawFromRaw();
 }
 
 void MPC_calculate(double &t_cur)
@@ -356,18 +402,8 @@ void odometryCallback(const nav_msgs::OdometryConstPtr &msg)
     odom_orient_.z() = msg->pose.pose.orientation.z;
 
     tf::quaternionMsgToTF(msg->pose.pose.orientation,quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
-
-    if(dir.data==NEGATIVE)
-    {
-        if(yaw>0)
-        {
-            yaw -= PI;
-        }else if(yaw<0)
-        {
-            yaw += PI;
-        }
-    }
+    tf::Matrix3x3(quat).getRPY(roll, pitch, raw_yaw);
+    updateTrackingYawFromRaw();
 
 }
 
