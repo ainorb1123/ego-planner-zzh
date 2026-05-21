@@ -212,7 +212,6 @@ void MPC_calculate(double &t_cur)
 
             double yaw1 = atan2(yaw_v_1(1),yaw_v_1(0));
             double yaw2 = atan2(yaw_v_2(1),yaw_v_2(0));
-
             if(abs(yaw2-yaw1)>PI)
             {
                 //ROS_WARN("orientation suddenly change !");
