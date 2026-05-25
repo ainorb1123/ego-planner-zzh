@@ -711,12 +711,26 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
         }
         double lateral_obs = course.x() * rel_obs.y() - course.y() * rel_obs.x();
         double along_obs = rel_obs.dot(course);
-        bool already_maneuvering = lateral_obs < -3.0;
-        bool need_overtaking_replan = !already_maneuvering || along_obs > -planner_manager_->getSafeDCPA() * 2.0;
-        if (need_overtaking_replan &&
-            (time_now - last_overtaking_replan_time).toSec() > 1.0)
+        const double safe_dcpa = planner_manager_->getSafeDCPA();
+        const double desired_left_offset = std::max(safe_dcpa * 1.1, 5.5);
+        Eigen::Vector2d left_normal(-course.y(), course.x());
+        Eigen::Vector2d lane_origin = odom_pos_.head<2>();
+        if (planner_manager_->hasOvertakingManeuverLock())
+        {
+          lane_origin = planner_manager_->getOvertakingLockOrigin();
+        }
+        double current_left_offset = (odom_pos_.head<2>() - lane_origin).dot(left_normal);
+
+        bool still_needs_port_shift =
+            along_obs > -safe_dcpa * 2.0 &&
+            current_left_offset < desired_left_offset * 0.35;
+
+        if (still_needs_port_shift &&
+            (time_now - last_overtaking_replan_time).toSec() > 1.2)
         {
           last_overtaking_replan_time = time_now;
+          ROS_WARN("OVERTAKING: replan only to enter port lane, left_offset=%.2f/%.2f, rel_lateral=%.2f, rel_along=%.2f",
+                   current_left_offset, desired_left_offset, lateral_obs, along_obs);
           changeFSMExecState(REPLAN_TRAJ, "OVERTAKING");
         }
         return;

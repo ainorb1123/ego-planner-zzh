@@ -244,7 +244,7 @@ namespace ego_planner
         {
             const double start_speed =
                 std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[0].head<2>().norm()));
-            const double start_left_gain = current_left_offset < desired_offset * 0.8 ? 0.35 : 0.05;
+            const double start_left_gain = current_left_offset < desired_offset * 0.45 ? 0.28 : 0.0;
             Eigen::Vector2d biased_start_dir = forward + start_left_gain * left_normal;
             if (biased_start_dir.norm() > 1e-3)
             {
@@ -252,8 +252,14 @@ namespace ego_planner
                 start_end_derivatives[0].x() = biased_start_dir.x() * start_speed;
                 start_end_derivatives[0].y() = biased_start_dir.y() * start_speed;
             }
-        }
 
+            if (hold_until_local_target && start_end_derivatives.size() >= 2)
+            {
+                const double end_speed = std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[1].head<2>().norm()));
+                start_end_derivatives[1].x() = forward.x() * end_speed;
+                start_end_derivatives[1].y() = forward.y() * end_speed;
+            }
+        }
         ROS_WARN("COLREGs OVERTAKING: applied port-side bias to local initial trajectory, offset=%.2f m, points=%zu",
                  desired_offset, point_set.size());
     }
