@@ -96,6 +96,7 @@ namespace ego_planner
     bool flag_escape_emergency_;
     bool was_in_head_on_maneuver_{false};
     bool force_head_on_poly_replan_once_{false};
+    bool force_head_on_return_target_once_{false};
     bool was_in_overtaking_maneuver_{false};
     bool force_overtaking_poly_replan_once_{false};
 

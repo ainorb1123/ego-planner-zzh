@@ -590,7 +590,15 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       {
           Eigen::Vector3d vel_start = planner_manager_->local_data_.velocity_traj_.evaluateDeBoor(0.1);
           yaw_start = atan2(vel_start(1),vel_start(0));
-          syncDirectionWithTrajectoryYaw(yaw_start);
+          if (force_head_on_return_target_once_)
+          {
+            setDirection(POSITIVE);
+            force_head_on_return_target_once_ = false;
+          }
+          else
+          {
+            syncDirectionWithTrajectoryYaw(yaw_start);
+          }
 
           auto info = &planner_manager_->local_data_;
           info->start_time_ = ros::Time::now();
@@ -747,6 +755,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       {
         was_in_head_on_maneuver_ = false;
         force_head_on_poly_replan_once_ = true;
+        force_head_on_return_target_once_ = true;
         ROS_WARN("HEAD_ON cleared: forcing one polynomial replan back toward global target");
         changeFSMExecState(REPLAN_TRAJ, "HEAD_ON_CLEAR");
         return;
@@ -819,11 +828,15 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
 
 
     const bool force_poly_init = force_head_on_poly_replan_once_ || force_overtaking_poly_replan_once_;
+    const bool force_forward_direction = force_head_on_poly_replan_once_;
     force_head_on_poly_replan_once_ = false;
     force_overtaking_poly_replan_once_ = false;
 
     bool success = callReboundReplan(force_poly_init, false);
-
+    if (success && force_forward_direction)
+    {
+      setDirection(POSITIVE);
+    }
     if (!success)
     {
       success = callReboundReplan(true, false);
@@ -1102,6 +1115,24 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
   void EGOReplanFSM::getLocalTarget()
   {
     double t;
+
+    if (force_head_on_return_target_once_)
+    {
+      Eigen::Vector2d to_goal = (end_pt_ - start_pt_).head<2>();
+      double goal_dist = to_goal.norm();
+      if (goal_dist > 1e-3)
+      {
+        Eigen::Vector2d goal_dir = to_goal / goal_dist;
+        double lookahead = std::min(planning_horizen_, goal_dist);
+        Eigen::Vector2d target2d = start_pt_.head<2>() + goal_dir * lookahead;
+        local_target_pt_ << target2d.x(), target2d.y(), odom_pos_(2);
+        const double target_speed = std::min(planner_manager_->pp_.max_vel_, std::max(0.5, odom_vel_.head<2>().norm()));
+        local_target_vel_ << goal_dir.x() * target_speed, goal_dir.y() * target_speed, 0.0;
+        ROS_WARN("HEAD_ON cleared: direct return target set forward to (%.2f, %.2f), final goal=(%.2f, %.2f)",
+                 local_target_pt_.x(), local_target_pt_.y(), end_pt_.x(), end_pt_.y());
+        return;
+      }
+    }
 
     double t_step = planning_horizen_ / 20 / planner_manager_->pp_.max_vel_;
     double dist_min = 9999, dist_min_t = 0.0;
