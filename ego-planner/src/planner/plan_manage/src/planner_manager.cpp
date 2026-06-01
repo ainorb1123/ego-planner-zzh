@@ -25,6 +25,15 @@ namespace ego_planner
         overtaking_lock_origin_ = Eigen::Vector2d::Zero();
         overtaking_obstacle_track_origin_ = Eigen::Vector2d::Zero();
     }
+
+    void EGOPlannerManager::resetCrossingManeuver()
+    {
+        crossing_maneuver_lock_ = false;
+        crossing_lock_obstacle_ = "none";
+        crossing_track_course_ = Eigen::Vector2d(1.0, 0.0);
+        crossing_track_origin_ = Eigen::Vector2d::Zero();
+        crossing_initial_side_ = 0.0;
+    }
     void EGOPlannerManager::updateAStarColregsContext(const Eigen::Vector3d& start_pt,
                                                       const Eigen::Vector3d& start_vel)
     {
@@ -273,34 +282,54 @@ namespace ego_planner
         if (current_scenario_ != CROSS_GIVE_WAY || point_set.size() < 4)
             return;
 
-        Eigen::Vector2d ts_course = ts_vel_.head<2>();
-        if (ts_course.norm() < 0.05)
+        Eigen::Vector2d forward = ts_vel_.head<2>();
+        if (forward.norm() < 0.05)
+        {
+            forward = (local_target_pt - start_pt).head<2>();
+        }
+        if (forward.norm() < 1e-3)
             return;
-        ts_course.normalize();
+        forward.normalize();
 
-        const Eigen::Vector2d start2d = start_pt.head<2>();
-        const Eigen::Vector2d target2d = local_target_pt.head<2>();
-        const Eigen::Vector2d behind_point = ts_pos_.head<2>() - ts_course * std::max(safe_dcpa_ * 2.0, 7.0);
-        const double route_len = std::max((target2d - start2d).norm(), 1.0);
+        Eigen::Vector2d start2d = start_pt.head<2>();
+        Eigen::Vector2d target2d = local_target_pt.head<2>();
+        Eigen::Vector2d path_dir = target2d - start2d;
+        if (path_dir.norm() < 1e-3)
+            path_dir = forward;
+        else
+            path_dir.normalize();
 
-        for (size_t i = 1; i < point_set.size(); ++i)
+        Eigen::Vector2d right_dir(path_dir.y(), -path_dir.x());
+        if (crossing_maneuver_lock_)
+        {
+            Eigen::Vector2d track_course = crossing_track_course_;
+            if (track_course.norm() > 0.05)
+            {
+                track_course.normalize();
+                Eigen::Vector2d track_normal(-track_course.y(), track_course.x());
+                if (right_dir.dot(-track_normal * crossing_initial_side_) < 0.0)
+                {
+                    right_dir = -right_dir;
+                }
+            }
+        }
+
+        const double desired_shift = std::max(safe_dcpa_ * 0.45, 1.6);
+        for (size_t i = 1; i + 1 < point_set.size(); ++i)
         {
             const double s = static_cast<double>(i) / std::max(1.0, static_cast<double>(point_set.size() - 1));
             const double w = std::sin(M_PI * s);
-            Eigen::Vector2d original = point_set[i].head<2>();
-            Eigen::Vector2d nominal = start2d + (target2d - start2d) * s;
-            Eigen::Vector2d desired = nominal + (behind_point - nominal) * (0.65 * w);
-            Eigen::Vector2d blended = original * (1.0 - 0.45 * w) + desired * (0.45 * w);
-            point_set[i].x() = blended.x();
-            point_set[i].y() = blended.y();
+            Eigen::Vector2d shifted = point_set[i].head<2>() + right_dir * (desired_shift * w);
+            point_set[i].x() = shifted.x();
+            point_set[i].y() = shifted.y();
         }
 
         if (!start_end_derivatives.empty())
         {
-            Eigen::Vector2d start_dir = (behind_point - start2d);
+            Eigen::Vector2d start_dir = path_dir * 0.9 + right_dir * 0.1;
             if (start_dir.norm() > 1e-3)
             {
-                const double start_speed = std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[0].head<2>().norm()));
+                const double start_speed = std::max(0.35, std::min(pp_.max_vel_ * 0.65, start_end_derivatives[0].head<2>().norm() * 0.75));
                 start_dir.normalize();
                 start_end_derivatives[0].x() = start_dir.x() * start_speed;
                 start_end_derivatives[0].y() = start_dir.y() * start_speed;
@@ -308,19 +337,14 @@ namespace ego_planner
 
             if (start_end_derivatives.size() >= 2)
             {
-                Eigen::Vector2d end_dir = (target2d - behind_point);
-                if (end_dir.norm() > 1e-3)
-                {
-                    const double end_speed = std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[1].head<2>().norm()));
-                    end_dir.normalize();
-                    start_end_derivatives[1].x() = end_dir.x() * end_speed;
-                    start_end_derivatives[1].y() = end_dir.y() * end_speed;
-                }
+                const double end_speed = std::max(0.35, std::min(pp_.max_vel_ * 0.65, start_end_derivatives[1].head<2>().norm() * 0.75));
+                start_end_derivatives[1].x() = path_dir.x() * end_speed;
+                start_end_derivatives[1].y() = path_dir.y() * end_speed;
             }
         }
 
-        ROS_WARN("COLREGs CROSSING: biasing path behind target ship, behind=(%.2f, %.2f), route_len=%.2f, points=%zu",
-                 behind_point.x(), behind_point.y(), route_len, point_set.size());
+        ROS_WARN("COLREGs CROSSING: starboard bias and speed reduction, shift=%.2f m, points=%zu",
+                 desired_shift, point_set.size());
     }
     void EGOPlannerManager::updateDynamicObstacle(const std::string& name, const Eigen::Vector3d& pos,
                                                   const Eigen::Vector3d& vel, const ros::Time& stamp)
@@ -942,6 +966,39 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             current_scenario_ = NONE;
             return;
         }
+        if (crossing_maneuver_lock_)
+        {
+            const bool same_obstacle = crossing_lock_obstacle_ == active_obstacle_name_;
+            const double lock_time = (ros::Time::now() - crossing_lock_start_).toSec();
+            Eigen::Vector2d track_course = crossing_track_course_;
+            if (track_course.norm() < 1e-3)
+            {
+                track_course = v_ts.norm() > 0.05 ? v_ts.normalized() : Eigen::Vector2d(0.0, 1.0);
+            }
+            else
+            {
+                track_course.normalize();
+            }
+            Eigen::Vector2d track_normal(-track_course.y(), track_course.x());
+            const double current_side = (p_os - crossing_track_origin_).dot(track_normal);
+            const bool crossed_track_line = crossing_initial_side_ * current_side < -0.25;
+            const bool safely_opening = tcpa < -0.2 || dcpa > safe_dcpa_ * 1.35;
+            const bool clear_by_timeout = lock_time > 18.0 && safely_opening;
+
+            if (same_obstacle && !crossed_track_line && !clear_by_timeout)
+            {
+                current_scenario_ = CROSS_GIVE_WAY;
+                ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 2 | locked starboard crossing | side: %.2f->%.2f | DCPA: %.2f | TCPA: %.2f",
+                                  crossing_initial_side_, current_side, dcpa, tcpa);
+                return;
+            }
+
+            ROS_WARN("[COLREGs] CROSSING lock released | side: %.2f->%.2f | crossed=%d | DCPA: %.2f | TCPA: %.2f | lock_time: %.2f",
+                     crossing_initial_side_, current_side, crossed_track_line ? 1 : 0, dcpa, tcpa, lock_time);
+            resetCrossingManeuver();
+            current_scenario_ = NONE;
+            return;
+        }
         if (dist > colregs_dist_threshold_ || tcpa <= 0 || dcpa > safe_dcpa_) {
             current_scenario_ = NONE;
             ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 0 | filtered | dist: %.2f/%.2f | DCPA: %.2f/%.2f | TCPA: %.2f",
@@ -1034,6 +1091,30 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
                      head_on_lock_obstacle_.c_str());
         }
 
+        if (current_scenario_ == CROSS_GIVE_WAY && !crossing_maneuver_lock_)
+        {
+            crossing_maneuver_lock_ = true;
+            crossing_lock_obstacle_ = active_obstacle_name_;
+            crossing_lock_start_ = ros::Time::now();
+            crossing_track_course_ = v_ts.norm() > 0.05 ? v_ts.normalized() : Eigen::Vector2d(0.0, 1.0);
+            if (crossing_track_course_.norm() < 1e-3)
+            {
+                crossing_track_course_ = Eigen::Vector2d(0.0, 1.0);
+            }
+            else
+            {
+                crossing_track_course_.normalize();
+            }
+            crossing_track_origin_ = p_ts;
+            Eigen::Vector2d track_normal(-crossing_track_course_.y(), crossing_track_course_.x());
+            crossing_initial_side_ = (p_os - crossing_track_origin_).dot(track_normal);
+            if (std::abs(crossing_initial_side_) < 0.25)
+            {
+                crossing_initial_side_ = lateral_to_ts < 0.0 ? -0.25 : 0.25;
+            }
+            ROS_WARN("[COLREGs] CROSSING maneuver locked for obstacle: %s | initial_side=%.2f",
+                     crossing_lock_obstacle_.c_str(), crossing_initial_side_);
+        }
         if (current_scenario_ == OVERTAKING && !overtaking_maneuver_lock_)
         {
             overtaking_maneuver_lock_ = true;

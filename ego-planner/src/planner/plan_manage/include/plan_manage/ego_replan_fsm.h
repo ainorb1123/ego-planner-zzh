@@ -99,6 +99,8 @@ namespace ego_planner
     bool force_head_on_return_target_once_{false};
     bool was_in_overtaking_maneuver_{false};
     bool force_overtaking_poly_replan_once_{false};
+    bool was_in_crossing_maneuver_{false};
+    bool force_crossing_poly_replan_once_{false};
 
     /* ROS utils */
     ros::NodeHandle node_;

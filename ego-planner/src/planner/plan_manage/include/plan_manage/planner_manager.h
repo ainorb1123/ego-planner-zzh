@@ -1,4 +1,4 @@
-﻿#ifndef _PLANNER_MANAGER_H_
+#ifndef _PLANNER_MANAGER_H_
 #define _PLANNER_MANAGER_H_
 
 #include <stdlib.h>
@@ -14,7 +14,7 @@
 #include <plan_env/grid_map.h>
 #include <plan_manage/plan_container.hpp>
 #include <traj_utils/planning_visualization.h>
-#include <path_searching/hybrid_a_star.h>  // 娣峰悎A*璺緞鎼滅储
+#include <path_searching/hybrid_a_star.h>  // ???A*??????
 
 namespace ego_planner
 {
@@ -33,7 +33,7 @@ namespace ego_planner
         EGOPlannerManager();
         ~EGOPlannerManager();
 
-        /* --- COLREGs 娴蜂簨閬跨鐩稿叧鏁版嵁缁撴瀯 --- */
+        /* --- COLREGs ??????????????? --- */
         
         // COLREGs scenario: 0 none, 1 head-on, 2 crossing give-way, 3 crossing stand-on, 4 overtaking
         enum COLREGS_SCENARIO {
@@ -57,13 +57,13 @@ namespace ego_planner
                                    const Eigen::Vector3d& vel, const ros::Time& stamp);
         bool selectActiveObstacle(const Eigen::Vector3d& os_pos, const Eigen::Vector3d& os_vel);
 
-        /* --- 瑙勫垝鍣ㄦ牳蹇冩帴鍙?--- */
+        /* --- ???????????--- */
 
         bool reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d start_vel, Eigen::Vector3d start_acc,
                            Eigen::Vector3d end_pt, Eigen::Vector3d end_vel, bool flag_polyInit, bool flag_randomPolyTraj);
         
         bool EmergencyStop(Eigen::Vector3d stop_pos);
-        // 鍏ㄥ眬璺緞瑙勫垝
+        // ?????????
         bool planGlobalTraj(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                             const Eigen::Vector3d &end_pos, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
         
@@ -72,12 +72,12 @@ namespace ego_planner
 
         void initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis = NULL);
 
-        /* --- 鍏叡鎴愬憳鍙橀噺 --- */
-        PlanParameters pp_;              // 瑙勫垝鍙傛暟
-        LocalTrajData local_data_;       // 鏈湴杞ㄨ抗鏁版嵁
-        GlobalTrajData global_data_;     // 鍏ㄥ眬杞ㄨ抗鏁版嵁
-        GridMap::Ptr grid_map_;          // 鍦板浘鎸囬拡
-        HybridAStar::Ptr a_star_;        // 娣峰悎A*璺緞鎼滅储鍣ㄦ寚閽?
+        /* --- ????????? --- */
+        PlanParameters pp_;              // ??????
+        LocalTrajData local_data_;       // ?????????
+        GlobalTrajData global_data_;     // ?????????
+        GridMap::Ptr grid_map_;          // ??????
+        HybridAStar::Ptr a_star_;        // ???A*???????????
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
         double getLastDCPA() const { return last_dcpa_; }
@@ -91,19 +91,23 @@ namespace ego_planner
         Eigen::Vector2d getOvertakingLockCourse() const { return overtaking_lock_course_; }
         Eigen::Vector2d getOvertakingLockOrigin() const { return overtaking_lock_origin_; }
         Eigen::Vector2d getOvertakingObstacleTrackOrigin() const { return overtaking_obstacle_track_origin_; }
+        bool hasCrossingManeuverLock() const { return crossing_maneuver_lock_; }
+        Eigen::Vector2d getCrossingTrackCourse() const { return crossing_track_course_; }
+        Eigen::Vector2d getCrossingTrackOrigin() const { return crossing_track_origin_; }
+        double getCrossingInitialSide() const { return crossing_initial_side_; }
 
     private:
-        /* --- 鍐呴儴绉佹湁绠楁硶涓庢ā鍧?--- */
+        /* --- ???????????a??--- */
         PlanningVisualization::Ptr visualization_;
         BsplineOptimizer::Ptr bspline_optimizer_rebound_;
 
-        // 鐢ㄤ簬璁＄畻鍜屼繚瀛樻渶杩戜竴娆＄殑閬跨鎸囨爣
+        // ????$???????????$???????
         double last_dcpa_{0.0};
         double last_tcpa_{0.0};
 
-        // 閬跨閫昏緫鍙傛暟
-        double colregs_dist_threshold_{25.0}; // 瑙﹀彂鍒ゅ畾璺濈
-        double safe_dcpa_{3.5};               // 瀹夊叏璺濈闃堝€?
+        // ?????????
+        double colregs_dist_threshold_{25.0}; // ?????????
+        double safe_dcpa_{3.5};               // ??????????
         int continuous_failures_count_{0};
         std::vector<DynamicObstacleState> dynamic_obstacles_;
         bool head_on_maneuver_lock_{false};
@@ -118,9 +122,16 @@ namespace ego_planner
         Eigen::Vector2d overtaking_lock_course_{Eigen::Vector2d(1.0, 0.0)};
         Eigen::Vector2d overtaking_lock_origin_{Eigen::Vector2d::Zero()};
         Eigen::Vector2d overtaking_obstacle_track_origin_{Eigen::Vector2d::Zero()};
+        bool crossing_maneuver_lock_{false};
+        std::string crossing_lock_obstacle_{"none"};
+        ros::Time crossing_lock_start_;
+        Eigen::Vector2d crossing_track_course_{Eigen::Vector2d(1.0, 0.0)};
+        Eigen::Vector2d crossing_track_origin_{Eigen::Vector2d::Zero()};
+        double crossing_initial_side_{0.0};
 
         void resetHeadOnManeuver();
         void resetOvertakingManeuver();
+        void resetCrossingManeuver();
         void updateAStarColregsContext(const Eigen::Vector3d& start_pt,
                                        const Eigen::Vector3d& start_vel);
         void applyHeadOnInitialBias(const Eigen::Vector3d& start_pt,
@@ -138,14 +149,14 @@ namespace ego_planner
                                       std::vector<Eigen::Vector3d>& point_set,
                                       std::vector<Eigen::Vector3d>& start_end_derivatives);
 
-        // 鏇存柊杞ㄨ抗淇℃伅
+        // ?????????
         void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
 
-        // B鏍锋潯閲嶅弬鏁板寲
+        // B?????????
         void reparamBspline(UniformBspline &bspline, std::vector<Eigen::Vector3d> &start_end_derivative, 
                             double ratio, Eigen::MatrixXd &ctrl_pts, double &dt, double &time_inc);
 
-        // 杞ㄨ抗绮惧寲绠楁硶
+        // ?????????
         bool refineTrajAlgo(UniformBspline &traj, std::vector<Eigen::Vector3d> &start_end_derivative, 
                             double ratio, double &ts, Eigen::MatrixXd &optimal_control_points);
 
