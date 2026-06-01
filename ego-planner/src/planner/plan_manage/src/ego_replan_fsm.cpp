@@ -1136,20 +1136,48 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
 
     double t_step = planning_horizen_ / 20 / planner_manager_->pp_.max_vel_;
     double dist_min = 9999, dist_min_t = 0.0;
-    for (t = planner_manager_->global_data_.last_progress_time_; t < planner_manager_->global_data_.global_duration_; t += t_step)
+    double progress_start = planner_manager_->global_data_.last_progress_time_;
+    Eigen::Vector3d progress_pos = planner_manager_->global_data_.getPosition(progress_start);
+    if ((progress_pos - start_pt_).norm() > planning_horizen_)
+    {
+      ROS_WARN("last_progress_time_ stale, resyncing global progress from %.2f", progress_start);
+      for (double tc = 0.0; tc < planner_manager_->global_data_.global_duration_; tc += t_step)
+      {
+        Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(tc);
+        double dist = (pos_t - start_pt_).norm();
+        if (dist < dist_min)
+        {
+          dist_min = dist;
+          dist_min_t = tc;
+        }
+      }
+      progress_start = dist_min_t;
+      planner_manager_->global_data_.last_progress_time_ = progress_start;
+      dist_min = 9999;
+      dist_min_t = progress_start;
+    }
+
+    for (t = progress_start; t < planner_manager_->global_data_.global_duration_; t += t_step)
     {
       Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(t);
       double dist = (pos_t - start_pt_).norm();
 
-      if (t < planner_manager_->global_data_.last_progress_time_ + 1e-5 && dist > planning_horizen_)
+      if (t < progress_start + 1e-5 && dist > planning_horizen_)
       {
-        // todo
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        return;
+        ROS_WARN("global progress still far after resync, using direct forward local target.");
+        Eigen::Vector2d to_goal = (end_pt_ - start_pt_).head<2>();
+        double goal_dist = to_goal.norm();
+        if (goal_dist > 1e-3)
+        {
+          Eigen::Vector2d goal_dir = to_goal / goal_dist;
+          double lookahead = std::min(planning_horizen_, goal_dist);
+          Eigen::Vector2d target2d = start_pt_.head<2>() + goal_dir * lookahead;
+          local_target_pt_ << target2d.x(), target2d.y(), odom_pos_(2);
+          local_target_vel_ << goal_dir.x() * planner_manager_->pp_.max_vel_,
+                               goal_dir.y() * planner_manager_->pp_.max_vel_,
+                               0.0;
+        }
+        break;
       }
       if (dist < dist_min)
       {
