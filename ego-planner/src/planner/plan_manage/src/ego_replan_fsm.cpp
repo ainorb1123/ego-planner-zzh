@@ -1123,12 +1123,36 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       if (goal_dist > 1e-3)
       {
         Eigen::Vector2d goal_dir = to_goal / goal_dist;
+        Eigen::Vector2d current_dir = odom_vel_.head<2>();
+        if (current_dir.norm() < 0.2 && planner_manager_->getHeadOnLockCourse().norm() > 0.05)
+        {
+          current_dir = planner_manager_->getHeadOnLockCourse();
+        }
+        if (current_dir.norm() < 1e-3 || current_dir.dot(goal_dir) < 0.0)
+        {
+          current_dir = goal_dir;
+        }
+        else
+        {
+          current_dir.normalize();
+        }
+
+        Eigen::Vector2d return_dir = current_dir * 0.65 + goal_dir * 0.35;
+        if (return_dir.norm() < 1e-3 || return_dir.dot(goal_dir) < 0.2)
+        {
+          return_dir = goal_dir;
+        }
+        else
+        {
+          return_dir.normalize();
+        }
+
         double lookahead = std::min(planning_horizen_, goal_dist);
-        Eigen::Vector2d target2d = start_pt_.head<2>() + goal_dir * lookahead;
+        Eigen::Vector2d target2d = start_pt_.head<2>() + return_dir * lookahead;
         local_target_pt_ << target2d.x(), target2d.y(), odom_pos_(2);
         const double target_speed = std::min(planner_manager_->pp_.max_vel_, std::max(0.5, odom_vel_.head<2>().norm()));
-        local_target_vel_ << goal_dir.x() * target_speed, goal_dir.y() * target_speed, 0.0;
-        ROS_WARN("HEAD_ON cleared: direct return target set forward to (%.2f, %.2f), final goal=(%.2f, %.2f)",
+        local_target_vel_ << return_dir.x() * target_speed, return_dir.y() * target_speed, 0.0;
+        ROS_WARN("HEAD_ON cleared: smooth return target set to (%.2f, %.2f), final goal=(%.2f, %.2f)",
                  local_target_pt_.x(), local_target_pt_.y(), end_pt_.x(), end_pt_.y());
         return;
       }
@@ -1164,17 +1188,39 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
 
       if (t < progress_start + 1e-5 && dist > planning_horizen_)
       {
-        ROS_WARN("global progress still far after resync, using direct forward local target.");
+        ROS_WARN("global progress still far after resync, using smooth forward local target.");
         Eigen::Vector2d to_goal = (end_pt_ - start_pt_).head<2>();
         double goal_dist = to_goal.norm();
         if (goal_dist > 1e-3)
         {
           Eigen::Vector2d goal_dir = to_goal / goal_dist;
+          Eigen::Vector2d current_dir = odom_vel_.head<2>();
+          if (current_dir.norm() < 0.2 && planner_manager_->getHeadOnLockCourse().norm() > 0.05)
+          {
+            current_dir = planner_manager_->getHeadOnLockCourse();
+          }
+          if (current_dir.norm() < 1e-3 || current_dir.dot(goal_dir) < 0.0)
+          {
+            current_dir = goal_dir;
+          }
+          else
+          {
+            current_dir.normalize();
+          }
+          Eigen::Vector2d return_dir = current_dir * 0.65 + goal_dir * 0.35;
+          if (return_dir.norm() < 1e-3 || return_dir.dot(goal_dir) < 0.2)
+          {
+            return_dir = goal_dir;
+          }
+          else
+          {
+            return_dir.normalize();
+          }
           double lookahead = std::min(planning_horizen_, goal_dist);
-          Eigen::Vector2d target2d = start_pt_.head<2>() + goal_dir * lookahead;
+          Eigen::Vector2d target2d = start_pt_.head<2>() + return_dir * lookahead;
           local_target_pt_ << target2d.x(), target2d.y(), odom_pos_(2);
-          local_target_vel_ << goal_dir.x() * planner_manager_->pp_.max_vel_,
-                               goal_dir.y() * planner_manager_->pp_.max_vel_,
+          local_target_vel_ << return_dir.x() * planner_manager_->pp_.max_vel_,
+                               return_dir.y() * planner_manager_->pp_.max_vel_,
                                0.0;
         }
         break;
