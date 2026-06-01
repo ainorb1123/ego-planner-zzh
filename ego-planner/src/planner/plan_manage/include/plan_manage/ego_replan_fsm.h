@@ -125,6 +125,7 @@ namespace ego_planner
     void getLocalTarget();
     bool adjustLocalTargetForHeadOn(double stop_dist);
     bool adjustLocalTargetForOvertaking(double stop_dist);
+    bool adjustLocalTargetForCrossing(double stop_dist);
     void publishBspline();
 
     /* ROS functions */

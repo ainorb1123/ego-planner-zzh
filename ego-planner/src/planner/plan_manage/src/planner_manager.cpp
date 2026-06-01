@@ -14,6 +14,7 @@ namespace ego_planner
         head_on_lock_obstacle_ = "none";
         head_on_lock_course_ = Eigen::Vector2d(1.0, 0.0);
         head_on_lock_origin_ = Eigen::Vector2d::Zero();
+        head_on_obstacle_track_origin_ = Eigen::Vector2d::Zero();
     }
 
     void EGOPlannerManager::resetOvertakingManeuver()
@@ -22,6 +23,7 @@ namespace ego_planner
         overtaking_lock_obstacle_ = "none";
         overtaking_lock_course_ = Eigen::Vector2d(1.0, 0.0);
         overtaking_lock_origin_ = Eigen::Vector2d::Zero();
+        overtaking_obstacle_track_origin_ = Eigen::Vector2d::Zero();
     }
     void EGOPlannerManager::updateAStarColregsContext(const Eigen::Vector3d& start_pt,
                                                       const Eigen::Vector3d& start_vel)
@@ -32,7 +34,7 @@ namespace ego_planner
         a_star_->setStartPos(start_pt.head<2>());
         a_star_->setSafeDcpa(safe_dcpa_);
 
-        if (current_scenario_ != HEAD_ON && current_scenario_ != OVERTAKING)
+        if (current_scenario_ != HEAD_ON && current_scenario_ != OVERTAKING && current_scenario_ != CROSS_GIVE_WAY)
         {
             a_star_->clearTargetShipInfo();
             return;
@@ -71,7 +73,7 @@ namespace ego_planner
         forward.normalize();
         const Eigen::Vector2d right_normal(forward.y(), -forward.x());
         const Eigen::Vector2d start2d = start_pt.head<2>();
-        const Eigen::Vector2d lane_origin = head_on_maneuver_lock_ ? head_on_lock_origin_ : start2d;
+        const Eigen::Vector2d lane_origin = head_on_maneuver_lock_ ? head_on_obstacle_track_origin_ : ts_pos_.head<2>();
         const Eigen::Vector2d target2d = local_target_pt.head<2>();
         const double path_len = std::max((target2d - start2d).dot(forward), 1.0);
         const double obs_along = std::max(0.0, (ts_pos_.head<2>() - lane_origin).dot(forward));
@@ -190,7 +192,7 @@ namespace ego_planner
         forward.normalize();
         const Eigen::Vector2d left_normal(-forward.y(), forward.x());
         const Eigen::Vector2d start2d = start_pt.head<2>();
-        const Eigen::Vector2d lane_origin = overtaking_maneuver_lock_ ? overtaking_lock_origin_ : start2d;
+        const Eigen::Vector2d lane_origin = overtaking_maneuver_lock_ ? overtaking_obstacle_track_origin_ : ts_pos_.head<2>();
         const Eigen::Vector2d target2d = local_target_pt.head<2>();
         const double path_len = std::max((target2d - start2d).dot(forward), 1.0);
         const double obs_along_from_start = (ts_pos_.head<2>() - start2d).dot(forward);
@@ -262,6 +264,63 @@ namespace ego_planner
         }
         ROS_WARN("COLREGs OVERTAKING: applied port-side bias to local initial trajectory, offset=%.2f m, points=%zu",
                  desired_offset, point_set.size());
+    }
+    void EGOPlannerManager::applyCrossingInitialBias(const Eigen::Vector3d& start_pt,
+                                                     const Eigen::Vector3d& local_target_pt,
+                                                     std::vector<Eigen::Vector3d>& point_set,
+                                                     std::vector<Eigen::Vector3d>& start_end_derivatives)
+    {
+        if (current_scenario_ != CROSS_GIVE_WAY || point_set.size() < 4)
+            return;
+
+        Eigen::Vector2d ts_course = ts_vel_.head<2>();
+        if (ts_course.norm() < 0.05)
+            return;
+        ts_course.normalize();
+
+        const Eigen::Vector2d start2d = start_pt.head<2>();
+        const Eigen::Vector2d target2d = local_target_pt.head<2>();
+        const Eigen::Vector2d behind_point = ts_pos_.head<2>() - ts_course * std::max(safe_dcpa_ * 2.0, 7.0);
+        const double route_len = std::max((target2d - start2d).norm(), 1.0);
+
+        for (size_t i = 1; i < point_set.size(); ++i)
+        {
+            const double s = static_cast<double>(i) / std::max(1.0, static_cast<double>(point_set.size() - 1));
+            const double w = std::sin(M_PI * s);
+            Eigen::Vector2d original = point_set[i].head<2>();
+            Eigen::Vector2d nominal = start2d + (target2d - start2d) * s;
+            Eigen::Vector2d desired = nominal + (behind_point - nominal) * (0.65 * w);
+            Eigen::Vector2d blended = original * (1.0 - 0.45 * w) + desired * (0.45 * w);
+            point_set[i].x() = blended.x();
+            point_set[i].y() = blended.y();
+        }
+
+        if (!start_end_derivatives.empty())
+        {
+            Eigen::Vector2d start_dir = (behind_point - start2d);
+            if (start_dir.norm() > 1e-3)
+            {
+                const double start_speed = std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[0].head<2>().norm()));
+                start_dir.normalize();
+                start_end_derivatives[0].x() = start_dir.x() * start_speed;
+                start_end_derivatives[0].y() = start_dir.y() * start_speed;
+            }
+
+            if (start_end_derivatives.size() >= 2)
+            {
+                Eigen::Vector2d end_dir = (target2d - behind_point);
+                if (end_dir.norm() > 1e-3)
+                {
+                    const double end_speed = std::max(0.4, std::min(pp_.max_vel_, start_end_derivatives[1].head<2>().norm()));
+                    end_dir.normalize();
+                    start_end_derivatives[1].x() = end_dir.x() * end_speed;
+                    start_end_derivatives[1].y() = end_dir.y() * end_speed;
+                }
+            }
+        }
+
+        ROS_WARN("COLREGs CROSSING: biasing path behind target ship, behind=(%.2f, %.2f), route_len=%.2f, points=%zu",
+                 behind_point.x(), behind_point.y(), route_len, point_set.size());
     }
     void EGOPlannerManager::updateDynamicObstacle(const std::string& name, const Eigen::Vector3d& pos,
                                                   const Eigen::Vector3d& vel, const ros::Time& stamp)
@@ -523,6 +582,7 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
 
         applyHeadOnInitialBias(start_pt, start_vel, local_target_pt, point_set, start_end_derivatives);
         applyOvertakingInitialBias(start_pt, start_vel, local_target_pt, point_set, start_end_derivatives);
+        applyCrossingInitialBias(start_pt, local_target_pt, point_set, start_end_derivatives);
 
         Eigen::MatrixXd ctrl_pts;
         UniformBspline::parameterizeToBspline(ts, point_set, start_end_derivatives, ctrl_pts);
@@ -843,6 +903,7 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             head_on_maneuver_lock_ = false;
             head_on_lock_obstacle_ = "none";
             head_on_lock_origin_ = Eigen::Vector2d::Zero();
+            head_on_obstacle_track_origin_ = Eigen::Vector2d::Zero();
             current_scenario_ = NONE;
             return;
         }
@@ -960,6 +1021,7 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
                 head_on_lock_course_ = -head_on_lock_course_;
             }
             head_on_lock_origin_ = os_pos.head<2>();
+            head_on_obstacle_track_origin_ = p_ts;
             if (head_on_lock_course_.norm() < 1e-3)
             {
                 head_on_lock_course_ = os_course.norm() > 1e-3 ? os_course : Eigen::Vector2d(1.0, 0.0);
@@ -984,6 +1046,7 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
                 overtaking_lock_course_ = -overtaking_lock_course_;
             }
             overtaking_lock_origin_ = os_pos.head<2>();
+            overtaking_obstacle_track_origin_ = p_ts;
             if (overtaking_lock_course_.norm() < 1e-3)
             {
                 overtaking_lock_course_ = os_course.norm() > 1e-3 ? os_course : Eigen::Vector2d(1.0, 0.0);

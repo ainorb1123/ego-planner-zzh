@@ -725,7 +725,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
         Eigen::Vector2d lane_origin = odom_pos_.head<2>();
         if (planner_manager_->hasOvertakingManeuverLock())
         {
-          lane_origin = planner_manager_->getOvertakingLockOrigin();
+          lane_origin = planner_manager_->getOvertakingObstacleTrackOrigin();
         }
         double current_left_offset = (odom_pos_.head<2>() - lane_origin).dot(left_normal);
 
@@ -740,6 +740,23 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
           ROS_WARN("OVERTAKING: replan only to enter port lane, left_offset=%.2f/%.2f, rel_lateral=%.2f, rel_along=%.2f",
                    current_left_offset, desired_left_offset, lateral_obs, along_obs);
           changeFSMExecState(REPLAN_TRAJ, "OVERTAKING");
+        }
+        return;
+      }
+      else if (planner_manager_->has_active_obstacle_ &&
+               planner_manager_->current_scenario_ == EGOPlannerManager::CROSS_GIVE_WAY)
+      {
+        static ros::Time last_crossing_replan_time(0);
+        const double dcpa = planner_manager_->getLastDCPA();
+        const double tcpa = planner_manager_->getLastTCPA();
+        const double safe_dcpa = planner_manager_->getSafeDCPA();
+        bool need_crossing_replan = tcpa > 0.0 && (tcpa < 10.0 || dcpa < safe_dcpa * 1.4);
+        if (need_crossing_replan &&
+            (time_now - last_crossing_replan_time).toSec() > 1.2)
+        {
+          last_crossing_replan_time = time_now;
+          ROS_WARN("CROSSING: replan to pass behind target ship, DCPA=%.2f, TCPA=%.2f", dcpa, tcpa);
+          changeFSMExecState(REPLAN_TRAJ, "CROSSING");
         }
         return;
       }
@@ -1023,7 +1040,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     double current_along = 0.0;
     if (planner_manager_->hasHeadOnManeuverLock())
     {
-      lane_origin = planner_manager_->getHeadOnLockOrigin();
+      lane_origin = planner_manager_->getHeadOnObstacleTrackOrigin();
       current_along = (start2d - lane_origin).dot(goal_dir);
     }
 
@@ -1097,7 +1114,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     double current_along = 0.0;
     if (planner_manager_->hasOvertakingManeuverLock())
     {
-      lane_origin = planner_manager_->getOvertakingLockOrigin();
+      lane_origin = planner_manager_->getOvertakingObstacleTrackOrigin();
       current_along = (start2d - lane_origin).dot(goal_dir);
     }
 
@@ -1110,6 +1127,57 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
                       target_points_to_obstacle ? 1 : 0);
     local_target_pt_.x() = corrected.x();
     local_target_pt_.y() = corrected.y();
+    return true;
+  }
+  bool EGOReplanFSM::adjustLocalTargetForCrossing(double stop_dist)
+  {
+    const bool raw_target_near_final = (end_pt_ - local_target_pt_).norm() < stop_dist;
+    if (!planner_manager_->has_active_obstacle_ ||
+        planner_manager_->current_scenario_ != EGOPlannerManager::CROSS_GIVE_WAY ||
+        raw_target_near_final)
+    {
+      return false;
+    }
+
+    Eigen::Vector2d ts_course = planner_manager_->ts_vel_.head<2>();
+    if (ts_course.norm() < 0.05)
+      return false;
+    ts_course.normalize();
+
+    Eigen::Vector2d start2d = start_pt_.head<2>();
+    Eigen::Vector2d goal_vec = (end_pt_ - start_pt_).head<2>();
+    double goal_dist = goal_vec.norm();
+    if (goal_dist <= 1e-3)
+      return false;
+
+    const double safe_dcpa = planner_manager_->getSafeDCPA();
+    const double behind_dist = std::max(safe_dcpa * 2.0, 7.0);
+    Eigen::Vector2d behind_point = planner_manager_->ts_pos_.head<2>() - ts_course * behind_dist;
+    Eigen::Vector2d to_behind = behind_point - start2d;
+    double behind_range = to_behind.norm();
+    if (behind_range < 1e-3)
+      return false;
+
+    const double lookahead = std::min(planning_horizen_, std::max(behind_range, goal_dist * 0.35));
+    Eigen::Vector2d corrected = behind_range > lookahead
+                                    ? start2d + to_behind.normalized() * lookahead
+                                    : behind_point;
+
+    local_target_pt_.x() = corrected.x();
+    local_target_pt_.y() = corrected.y();
+
+    Eigen::Vector2d target_dir = (local_target_pt_ - start_pt_).head<2>();
+    if (target_dir.norm() > 1e-3)
+    {
+      target_dir.normalize();
+      const double target_speed = std::min(planner_manager_->pp_.max_vel_, std::max(0.5, odom_vel_.head<2>().norm()));
+      local_target_vel_.x() = target_dir.x() * target_speed;
+      local_target_vel_.y() = target_dir.y() * target_speed;
+    }
+
+    ROS_WARN_THROTTLE(0.5,
+                      "CROSSING local target corrected behind target ship: new=(%.2f, %.2f), behind=(%.2f, %.2f)",
+                      local_target_pt_.x(), local_target_pt_.y(), behind_point.x(), behind_point.y());
     return true;
   }
   void EGOReplanFSM::getLocalTarget()
@@ -1147,7 +1215,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
           return_dir.normalize();
         }
 
-        double lookahead = std::min(planning_horizen_, goal_dist);
+        double lookahead = std::min(std::min(planning_horizen_ * 0.35, 4.0), goal_dist);
         Eigen::Vector2d target2d = start_pt_.head<2>() + return_dir * lookahead;
         local_target_pt_ << target2d.x(), target2d.y(), odom_pos_(2);
         const double target_speed = std::min(planner_manager_->pp_.max_vel_, std::max(0.5, odom_vel_.head<2>().norm()));
@@ -1216,7 +1284,7 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
           {
             return_dir.normalize();
           }
-          double lookahead = std::min(planning_horizen_, goal_dist);
+          double lookahead = std::min(std::min(planning_horizen_ * 0.35, 4.0), goal_dist);
           Eigen::Vector2d target2d = start_pt_.head<2>() + return_dir * lookahead;
           local_target_pt_ << target2d.x(), target2d.y(), odom_pos_(2);
           local_target_vel_ << return_dir.x() * planner_manager_->pp_.max_vel_,
@@ -1245,7 +1313,8 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     const double stop_dist = (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) /
                              (2 * planner_manager_->pp_.max_acc_);
     const bool local_target_corrected = adjustLocalTargetForHeadOn(stop_dist) ||
-                                       adjustLocalTargetForOvertaking(stop_dist);
+                                       adjustLocalTargetForOvertaking(stop_dist) ||
+                                       adjustLocalTargetForCrossing(stop_dist);
     const bool near_final_target = (end_pt_ - local_target_pt_).norm() < stop_dist;
     if (near_final_target)
     {

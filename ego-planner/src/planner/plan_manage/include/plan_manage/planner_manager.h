@@ -86,9 +86,11 @@ namespace ego_planner
         bool hasHeadOnManeuverLock() const { return head_on_maneuver_lock_; }
         Eigen::Vector2d getHeadOnLockCourse() const { return head_on_lock_course_; }
         Eigen::Vector2d getHeadOnLockOrigin() const { return head_on_lock_origin_; }
+        Eigen::Vector2d getHeadOnObstacleTrackOrigin() const { return head_on_obstacle_track_origin_; }
         bool hasOvertakingManeuverLock() const { return overtaking_maneuver_lock_; }
         Eigen::Vector2d getOvertakingLockCourse() const { return overtaking_lock_course_; }
         Eigen::Vector2d getOvertakingLockOrigin() const { return overtaking_lock_origin_; }
+        Eigen::Vector2d getOvertakingObstacleTrackOrigin() const { return overtaking_obstacle_track_origin_; }
 
     private:
         /* --- 鍐呴儴绉佹湁绠楁硶涓庢ā鍧?--- */
@@ -109,11 +111,13 @@ namespace ego_planner
         ros::Time head_on_lock_start_;
         Eigen::Vector2d head_on_lock_course_{Eigen::Vector2d(1.0, 0.0)};
         Eigen::Vector2d head_on_lock_origin_{Eigen::Vector2d::Zero()};
+        Eigen::Vector2d head_on_obstacle_track_origin_{Eigen::Vector2d::Zero()};
         bool overtaking_maneuver_lock_{false};
         std::string overtaking_lock_obstacle_{"none"};
         ros::Time overtaking_lock_start_;
         Eigen::Vector2d overtaking_lock_course_{Eigen::Vector2d(1.0, 0.0)};
         Eigen::Vector2d overtaking_lock_origin_{Eigen::Vector2d::Zero()};
+        Eigen::Vector2d overtaking_obstacle_track_origin_{Eigen::Vector2d::Zero()};
 
         void resetHeadOnManeuver();
         void resetOvertakingManeuver();
@@ -129,6 +133,10 @@ namespace ego_planner
                                         const Eigen::Vector3d& local_target_pt,
                                         std::vector<Eigen::Vector3d>& point_set,
                                         std::vector<Eigen::Vector3d>& start_end_derivatives);
+        void applyCrossingInitialBias(const Eigen::Vector3d& start_pt,
+                                      const Eigen::Vector3d& local_target_pt,
+                                      std::vector<Eigen::Vector3d>& point_set,
+                                      std::vector<Eigen::Vector3d>& start_end_derivatives);
 
         // 鏇存柊杞ㄨ抗淇℃伅
         void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
