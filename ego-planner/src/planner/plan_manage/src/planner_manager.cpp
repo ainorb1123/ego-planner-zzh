@@ -440,6 +440,7 @@ namespace ego_planner
         nh.param("manager/control_points_distance", pp_.ctrl_pt_dist, -1.0);
         nh.param("manager/planning_horizon", pp_.planning_horizen_, 5.0);
         nh.param("manager/colregs_dist_threshold", colregs_dist_threshold_, 25.0);
+        nh.param("manager/colregs_tcpa_threshold", colregs_tcpa_threshold_, 30.0);
         nh.param("manager/safe_dcpa", safe_dcpa_, 3.5);
 
         local_data_.traj_id_ = 0;
@@ -552,6 +553,13 @@ bool EGOPlannerManager::reboundReplan(Eigen::Vector3d start_pt, Eigen::Vector3d 
                     }
                 }
                 t -= ts;
+
+                if (segment_point.size() < 2 || pseudo_arc_length.size() < 2)
+                {
+                    flag_force_polynomial = true;
+                    flag_regenerate = true;
+                    continue;
+                }
 
                 double poly_time = (local_data_.position_traj_.evaluateDeBoorT(t) - local_target_pt).norm() / pp_.max_vel_ * 2;
                 if (poly_time > ts)
@@ -983,9 +991,10 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             const double current_side = (p_os - crossing_track_origin_).dot(track_normal);
             const bool crossed_track_line = crossing_initial_side_ * current_side < -0.25;
             const bool safely_opening = tcpa < -0.2 || dcpa > safe_dcpa_ * 1.35;
+            const bool cpa_too_far = tcpa > colregs_tcpa_threshold_;
             const bool clear_by_timeout = lock_time > 18.0 && safely_opening;
 
-            if (same_obstacle && !crossed_track_line && !clear_by_timeout)
+            if (same_obstacle && !crossed_track_line && !clear_by_timeout && !cpa_too_far)
             {
                 current_scenario_ = CROSS_GIVE_WAY;
                 ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 2 | locked starboard crossing | side: %.2f->%.2f | DCPA: %.2f | TCPA: %.2f",
@@ -999,10 +1008,10 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
             current_scenario_ = NONE;
             return;
         }
-        if (dist > colregs_dist_threshold_ || tcpa <= 0 || dcpa > safe_dcpa_) {
+        if (dist > colregs_dist_threshold_ || tcpa <= 0 || tcpa > colregs_tcpa_threshold_ || dcpa > safe_dcpa_) {
             current_scenario_ = NONE;
-            ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 0 | filtered | dist: %.2f/%.2f | DCPA: %.2f/%.2f | TCPA: %.2f",
-                              dist, colregs_dist_threshold_, dcpa, safe_dcpa_, tcpa);
+            ROS_INFO_THROTTLE(0.5, "[COLREGs] Mode: 0 | filtered | dist: %.2f/%.2f | DCPA: %.2f/%.2f | TCPA: %.2f/%.2f",
+                              dist, colregs_dist_threshold_, dcpa, safe_dcpa_, tcpa, colregs_tcpa_threshold_);
             return;
         }
         bool has_clear_colregs_side = false;

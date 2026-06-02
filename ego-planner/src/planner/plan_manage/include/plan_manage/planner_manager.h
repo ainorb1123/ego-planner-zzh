@@ -107,6 +107,7 @@ namespace ego_planner
 
         // ?????????
         double colregs_dist_threshold_{25.0}; // ?????????
+        double colregs_tcpa_threshold_{30.0}; // ignore CPA events too far in the future
         double safe_dcpa_{3.5};               // ??????????
         int continuous_failures_count_{0};
         std::vector<DynamicObstacleState> dynamic_obstacles_;
