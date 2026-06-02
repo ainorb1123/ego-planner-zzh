@@ -1046,15 +1046,24 @@ void EGOPlannerManager::checkCOLREGs(const Eigen::Vector3d& os_pos, const Eigen:
 
         COLREGS_SCENARIO detected_scenario = NONE;
 
-        // 判定逻辑
-        if (abs(rel_bearing_to_ts_deg) > 112.5 && v_os.norm() > v_ts.norm()) {
-            detected_scenario = OVERTAKING;
-        }
-        else if (abs(bearing_deg) < 15.0 && abs(angle_diff_deg) > 160.0) {
+        const double os_speed = v_os.norm();
+        const double ts_speed = v_ts.norm();
+        const bool target_ahead = along_to_ts > 0.0;
+        const bool same_direction = std::abs(angle_diff_deg) < 45.0;
+        const bool own_ship_clearly_faster = os_speed > ts_speed + 0.15;
+        const double overtaking_lateral_limit = std::max(safe_dcpa_ * 1.6, 6.0);
+        const bool lateral_relevant_for_overtaking = std::abs(lateral_to_ts) < overtaking_lateral_limit;
+        const bool own_ship_abaft_target = std::abs(rel_bearing_to_ts_deg) > 112.5;
+
+        if (std::abs(bearing_deg) < 15.0 && std::abs(angle_diff_deg) > 160.0) {
             detected_scenario = HEAD_ON;
         }
-        else if (abs(bearing_deg) <= 112.5) {
-            if (bearing_deg < 0) {
+        else if (own_ship_abaft_target && same_direction && target_ahead &&
+                 lateral_relevant_for_overtaking && own_ship_clearly_faster) {
+            detected_scenario = OVERTAKING;
+        }
+        else if (std::abs(bearing_deg) <= 112.5) {
+            if (bearing_deg < 0.0) {
                 detected_scenario = CROSS_GIVE_WAY;
             } else {
                 detected_scenario = CROSS_STAND_ON;
