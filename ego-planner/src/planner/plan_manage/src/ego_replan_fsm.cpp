@@ -631,9 +631,19 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       {
         if (planner_manager_->has_active_obstacle_ &&
             (planner_manager_->current_scenario_ == EGOPlannerManager::HEAD_ON ||
-             planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING))
+             planner_manager_->current_scenario_ == EGOPlannerManager::OVERTAKING ||
+             planner_manager_->current_scenario_ == EGOPlannerManager::CROSS_GIVE_WAY))
         {
           changeFSMExecState(REPLAN_TRAJ, "COLREGsContinue");
+          return;
+        }
+
+        if (was_in_crossing_maneuver_)
+        {
+          was_in_crossing_maneuver_ = false;
+          force_crossing_poly_replan_once_ = true;
+          ROS_WARN("CROSSING cleared at trajectory end: replan toward global target");
+          changeFSMExecState(REPLAN_TRAJ, "CROSSING_CLEAR");
           return;
         }
 
@@ -1150,81 +1160,39 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
       return false;
     }
 
-    Eigen::Vector2d ts_course = planner_manager_->ts_vel_.head<2>();
-    if (ts_course.norm() < 0.05)
-      return false;
-    ts_course.normalize();
-
     Eigen::Vector2d start2d = start_pt_.head<2>();
     Eigen::Vector2d goal_vec = (end_pt_ - start_pt_).head<2>();
     double goal_dist = goal_vec.norm();
     if (goal_dist <= 1e-3)
       return false;
+    Eigen::Vector2d goal_dir = goal_vec / goal_dist;
 
-    Eigen::Vector2d forward = odom_vel_.head<2>();
-    if (forward.norm() < 0.2)
+    if (planner_manager_->hasCrossingManeuverLock())
     {
-      forward = goal_vec;
-    }
-    if (forward.norm() < 1e-3)
-      return false;
-    forward.normalize();
-
-    Eigen::Vector2d track_course = planner_manager_->hasCrossingManeuverLock()
-                                       ? planner_manager_->getCrossingTrackCourse()
-                                       : ts_course;
-    if (track_course.norm() < 0.05)
-      track_course = ts_course;
-    track_course.normalize();
-    Eigen::Vector2d track_origin = planner_manager_->hasCrossingManeuverLock()
-                                       ? planner_manager_->getCrossingTrackOrigin()
-                                       : planner_manager_->ts_pos_.head<2>();
-    Eigen::Vector2d track_normal(-track_course.y(), track_course.x());
-    double current_side = (start2d - track_origin).dot(track_normal);
-    double initial_side = planner_manager_->hasCrossingManeuverLock()
-                              ? planner_manager_->getCrossingInitialSide()
-                              : current_side;
-
-    if (std::abs(initial_side) < 0.25)
-    {
-      initial_side = current_side < 0.0 ? -0.25 : 0.25;
+      Eigen::Vector2d track_course = planner_manager_->getCrossingTrackCourse();
+      if (track_course.norm() > 0.05)
+      {
+        track_course.normalize();
+        Eigen::Vector2d track_normal(-track_course.y(), track_course.x());
+        Eigen::Vector2d track_origin = planner_manager_->getCrossingTrackOrigin();
+        const double current_side = (start2d - track_origin).dot(track_normal);
+        const double initial_side = planner_manager_->getCrossingInitialSide();
+        if (std::abs(initial_side) > 0.05 && initial_side * current_side < -0.25)
+        {
+          return false;
+        }
+      }
     }
 
-    const bool crossed_track_line = initial_side * current_side < -0.25;
-    if (crossed_track_line)
+    double current_target_along = (local_target_pt_ - start_pt_).head<2>().dot(goal_dir);
+    if (current_target_along < 1.0)
     {
-      return false;
+      current_target_along = std::min(planning_horizen_, goal_dist);
     }
+    const double lookahead = std::min(goal_dist, std::max(3.0, std::min(planning_horizen_, current_target_along)));
+    Eigen::Vector2d corrected = start2d + goal_dir * lookahead;
 
-    Eigen::Vector2d right_dir(forward.y(), -forward.x());
-    if (right_dir.dot(-track_normal * initial_side) < 0.0)
-    {
-      right_dir = -right_dir;
-    }
-
-    const double safe_dcpa = planner_manager_->getSafeDCPA();
-    const double desired_right_offset = std::max(safe_dcpa * 0.55, 2.0);
-    const double side_abs = std::abs(current_side);
-    const double side_rate = forward.dot(track_normal);
-    const bool moving_toward_track_line = current_side * side_rate < -0.02;
-    const bool velocity_path_clear = !moving_toward_track_line &&
-                                     side_abs > safe_dcpa * 0.75 &&
-                                     planner_manager_->getLastDCPA() > safe_dcpa * 0.75;
-    const double forward_len = std::min(planning_horizen_, std::max(4.0, std::min(goal_dist, 8.0)));
-
-    Eigen::Vector2d corrected;
-    if (velocity_path_clear)
-    {
-      corrected = start2d + forward * forward_len;
-    }
-    else
-    {
-      const double shift = std::max(0.4, desired_right_offset - side_abs);
-      corrected = start2d + forward * (forward_len * 0.75) + right_dir * std::min(shift, 2.0);
-    }
-
-    Eigen::Vector2d to_goal_from_corrected = end_pt_.head<2>() - corrected;
-    if (to_goal_from_corrected.norm() < stop_dist)
+    if ((end_pt_.head<2>() - corrected).norm() < stop_dist)
     {
       corrected = end_pt_.head<2>();
     }
@@ -1232,20 +1200,15 @@ void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
     local_target_pt_.x() = corrected.x();
     local_target_pt_.y() = corrected.y();
 
-    Eigen::Vector2d target_dir = (local_target_pt_ - start_pt_).head<2>();
-    if (target_dir.norm() > 1e-3)
-    {
-      target_dir.normalize();
-      const double current_speed = odom_vel_.head<2>().norm();
-      const double target_speed = std::min(planner_manager_->pp_.max_vel_ * 0.65, std::max(0.45, current_speed * 0.75));
-      local_target_vel_.x() = target_dir.x() * target_speed;
-      local_target_vel_.y() = target_dir.y() * target_speed;
-    }
+    const double current_speed = odom_vel_.head<2>().norm();
+    const double target_speed = std::min(planner_manager_->pp_.max_vel_ * 0.65,
+                                         std::max(0.45, current_speed * 0.75));
+    local_target_vel_.x() = goal_dir.x() * target_speed;
+    local_target_vel_.y() = goal_dir.y() * target_speed;
 
     ROS_WARN_THROTTLE(0.5,
-                      "CROSSING local target: starboard=%d clear=%d side=%.2f/%.2f target=(%.2f, %.2f)",
-                      1, velocity_path_clear ? 1 : 0, initial_side, current_side,
-                      local_target_pt_.x(), local_target_pt_.y());
+                      "CROSSING local target kept on goal direction: target=(%.2f, %.2f), lookahead=%.2f",
+                      local_target_pt_.x(), local_target_pt_.y(), lookahead);
     return true;
   }
   void EGOReplanFSM::getLocalTarget()
